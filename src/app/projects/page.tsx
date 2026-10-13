@@ -2,8 +2,9 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { Thumbnail } from '@/components/Thumbnail';
 import { api, ApiError, timeAgo } from '@/lib/client/api';
-import type { Project } from '@/lib/shared/types';
+import type { Project, Version } from '@/lib/shared/types';
 
 export default function ProjectsPage() {
   const router = useRouter();
@@ -108,9 +109,17 @@ export default function ProjectsPage() {
         <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="project-list">
           {projects.map((p) => (
             <li key={p.id} className="group relative rounded-xl border border-slate-200 bg-white p-4 transition hover:shadow-md" data-testid="project-card">
-              <div className="mb-3 grid h-16 place-items-center rounded-lg bg-gradient-to-br from-brand-50 to-slate-100 text-2xl font-bold text-brand-600">
-                {p.name.slice(0, 1)}
-              </div>
+              <Link href={`/projects/${p.id}`} className="mb-3 block">
+                <Thumbnail
+                  key={p.current_version_id ?? 'none'}
+                  load={async () =>
+                    p.current_version_id
+                      ? (await api<{ version: Version }>(`/api/projects/${p.id}/versions?id=${p.current_version_id}`)).version.files
+                      : null
+                  }
+                  fallback={p.name.slice(0, 1)}
+                />
+              </Link>
               {editing === p.id ? (
                 <RenameInput initial={p.name} onDone={(name) => rename(p, name)} />
               ) : (

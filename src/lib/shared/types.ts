@@ -108,6 +108,7 @@ export type AgentEvent =
   | { event: 'agent_started'; data: { agent: AgentId } }
   | { event: 'message_delta'; data: { agent: AgentId; text: string } }
   | { event: 'file_started'; data: { path: string; agent?: AgentId } }
+  | { event: 'file_delta'; data: { path: string; text: string; agent?: AgentId } }
   | { event: 'file_done'; data: { path: string; bytes: number; content: string; agent?: AgentId } }
   | { event: 'version_created'; data: { versionId: string; seq: number; deleted: string[]; messageId: string } }
   | { event: 'run_finished'; data: { status: RunStatus; usage: Usage } }

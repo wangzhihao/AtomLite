@@ -62,6 +62,12 @@ test('sse round trip with heartbeat and arbitrary chunking', () => {
   ]);
 });
 
+test('persist: false keeps storage writes inside the iframe (thumbnails)', () => {
+  const html = buildPreviewHtml({ 'App.jsx': 'x' }, { vendorBase: '/vendor', persist: false });
+  assert.ok(html.includes('makeStorage({},false)'));
+  assert.ok(!html.includes('run_qa'));
+});
+
 test('qa mode injects the runner, stubs dialogs and does not persist storage', () => {
   const normal = buildPreviewHtml({ 'App.jsx': 'x' }, { vendorBase: '/vendor' });
   const qa = buildPreviewHtml({ 'App.jsx': 'x' }, { vendorBase: '/vendor', qa: true });

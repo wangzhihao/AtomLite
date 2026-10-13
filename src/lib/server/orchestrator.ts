@@ -44,6 +44,8 @@ class RunError extends Error {
   }
 }
 
+const DELTA_FLUSH_MS = 100;
+
 type PendingMessage = Omit<Message, 'id' | 'created_at' | 'project_id'>;
 
 type PlannerOut = Spec & { message?: string; needsClarification?: boolean; questions?: ClarifyQuestion[] };
@@ -134,6 +136,15 @@ export async function runGeneration(opts: {
     let summary = '';
     const changed: Files = {};
     const deleted: string[] = [];
+    // 文件增量合并后最多每 100 毫秒下发一次，代码面板据此实时跟随
+    let deltaBuf = { path: '', text: '' };
+    let lastFlush = 0;
+    const flushDelta = () => {
+      if (!deltaBuf.text) return;
+      emit({ event: 'file_delta', data: { path: deltaBuf.path, text: deltaBuf.text, agent: id } });
+      deltaBuf = { path: deltaBuf.path, text: '' };
+      lastFlush = Date.now();
+    };
     const onTag = (e: TagEvent) => {
       switch (e.type) {
         case 'text':
@@ -146,7 +157,16 @@ export async function runGeneration(opts: {
         case 'file_start':
           emit({ event: 'file_started', data: { path: e.path, agent: id } });
           break;
+        case 'file_delta':
+          if (deltaBuf.path !== e.path) {
+            flushDelta();
+            deltaBuf.path = e.path;
+          }
+          deltaBuf.text += e.text;
+          if (Date.now() - lastFlush >= DELTA_FLUSH_MS) flushDelta();
+          break;
         case 'file_end':
+          flushDelta();
           changed[e.path] = e.content;
           emit({ event: 'file_done', data: { path: e.path, bytes: Buffer.byteLength(e.content), content: e.content, agent: id } });
           break;

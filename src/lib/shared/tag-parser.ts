@@ -1,13 +1,16 @@
 /**
  * Engineer / Fixer 输出协议的增量解析器（设计文档第 5 节）：
  *   说明文字 <summary>…</summary> <file path="App.jsx">…</file> <delete path="x"/>
- * 可以边流边解析；未闭合的 file 标签在 finish() 时整段丢弃，其余文件不受影响。
+ * 可以边流边解析：文件写入中持续给出 file_delta，闭合时给出完整的 file_end；
+ * 未闭合的 file 标签在 finish() 时整段丢弃，其余文件不受影响。
  */
 export type TagEvent =
   /** inSummary：这段文字属于 <summary>，持久化时与说明文字分开存放 */
   | { type: 'text'; text: string; inSummary?: boolean }
   | { type: 'summary'; text: string }
   | { type: 'file_start'; path: string }
+  /** 文件写入过程中的增量（原始文本，未去围栏）；完整内容以 file_end 为准 */
+  | { type: 'file_delta'; path: string; text: string }
   | { type: 'file_end'; path: string; content: string }
   | { type: 'delete'; path: string };
 
@@ -17,6 +20,8 @@ export class TagParser {
   private buf = '';
   private state: 'text' | 'summary' | 'file' = 'text';
   private filePath = '';
+  /** 当前文件已作为 file_delta 发出的字符数 */
+  private fileSent = 0;
   private summary = '';
 
   push(chunk: string): TagEvent[] {
@@ -25,7 +30,15 @@ export class TagParser {
     for (;;) {
       if (this.state === 'file') {
         const end = this.buf.indexOf('</file>');
-        if (end < 0) return out; // 文件内容只在闭合时一次性下发
+        if (end < 0) {
+          // 留下可能是半个 </file> 的尾巴，其余作为增量发出
+          const safe = this.buf.length - ('</file>'.length - 1);
+          if (safe > this.fileSent) {
+            out.push({ type: 'file_delta', path: this.filePath, text: this.buf.slice(this.fileSent, safe) });
+            this.fileSent = safe;
+          }
+          return out;
+        }
         out.push({ type: 'file_end', path: this.filePath, content: cleanContent(this.buf.slice(0, end)) });
         this.buf = this.buf.slice(end + '</file>'.length);
         this.state = 'text';
@@ -68,6 +81,7 @@ export class TagParser {
       if (file) {
         this.state = 'file';
         this.filePath = normalizePath(file[1]);
+        this.fileSent = 0;
         this.buf = rest.slice(file[0].length);
         out.push({ type: 'file_start', path: this.filePath });
         continue;

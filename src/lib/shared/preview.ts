@@ -16,6 +16,8 @@ export type PreviewOptions = {
   storage?: Record<string, string>;
   /** 验收模式：存储不回写父页面、屏蔽弹窗，并接受父页面下发的交互测试 */
   qa?: boolean;
+  /** false 时存储写入不回写父页面（缩略图等只读场景），默认 true */
+  persist?: boolean;
 };
 
 const DEFAULT_INDEX = `<!doctype html>
@@ -130,7 +132,7 @@ window.addEventListener('message',function(e){
 window.alert=function(){};window.confirm=function(){return true;};window.prompt=function(){return '';};
 `;
 
-export function bridgeScript(storage: Record<string, string>, qa = false): string {
+export function bridgeScript(storage: Record<string, string>, qa = false, persist = true): string {
   return `(function(){
 var SOURCE=${JSON.stringify(PREVIEW_SOURCE)};
 function post(type,data){try{parent.postMessage({source:SOURCE,type:type,data:data},'*');}catch(e){}}
@@ -146,7 +148,7 @@ removeItem:function(k){m.delete(String(k));if(persist)post('storage_remove',{key
 clear:function(){m.clear();if(persist)post('storage_clear',{});},
 key:function(i){return Array.from(m.keys())[i]||null;}};
 Object.defineProperty(api,'length',{get:function(){return m.size;}});return api;}
-try{Object.defineProperty(window,'localStorage',{value:makeStorage(${jsonForScript(storage)},${qa ? 'false' : 'true'}),configurable:true});}catch(e){}
+try{Object.defineProperty(window,'localStorage',{value:makeStorage(${jsonForScript(storage)},${qa || !persist ? 'false' : 'true'}),configurable:true});}catch(e){}
 try{Object.defineProperty(window,'sessionStorage',{value:makeStorage({},false),configurable:true});}catch(e){}
 window.addEventListener('load',function(){setTimeout(function(){var r=document.getElementById('root');post('rendered',{empty:!!(r&&!r.children.length&&!r.textContent.trim())});},${qa ? 800 : 3000});});
 ${qa ? QA_RUNNER : ''}
@@ -158,7 +160,7 @@ export function buildPreviewHtml(files: Files, opts: PreviewOptions): string {
   const head: string[] = [];
   const body: string[] = [];
 
-  head.push(`<script>${escapeScript(bridgeScript(opts.storage ?? {}, opts.qa))}</script>`);
+  head.push(`<script>${escapeScript(bridgeScript(opts.storage ?? {}, opts.qa, opts.persist ?? true))}</script>`);
   for (const lib of ['react.js', 'react-dom.js', 'babel.js', 'tailwind.js']) {
     head.push(`<script src="${base}/${lib}"></script>`);
   }

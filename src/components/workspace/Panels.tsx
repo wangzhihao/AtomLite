@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, timeAgo } from '@/lib/client/api';
 import { buildPreviewHtml } from '@/lib/shared/preview';
 import { buildZip } from '@/lib/shared/zip';
@@ -24,10 +24,39 @@ function downloadZip(files: Files, name: string, seq: number | null) {
   setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
 }
 
-export function CodeView({ files, name = 'app', seq = null }: { files: Files | null; name?: string; seq?: number | null }) {
+/**
+ * 代码面板。生成过程中 followPath 指向正在写入的文件：面板自动切到它，内容随 file_delta 增长并滚到末尾。
+ * 用户手动点别的文件后暂停跟随，直到下一个文件开始写入。
+ */
+export function CodeView({
+  files,
+  name = 'app',
+  seq = null,
+  followPath = null,
+  writing = [],
+}: {
+  files: Files | null;
+  name?: string;
+  seq?: number | null;
+  followPath?: string | null;
+  writing?: string[];
+}) {
   const paths = Object.keys(files ?? {});
   const [sel, setSel] = useState<string | null>(null);
+  const [pinned, setPinned] = useState(false);
+  const pre = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (followPath) {
+      setSel(followPath);
+      setPinned(false);
+    }
+  }, [followPath]);
   const active = sel && paths.includes(sel) ? sel : (paths.find((p) => /app\.jsx$/i.test(p)) ?? paths[0]);
+  const following = Boolean(followPath && active === followPath && !pinned);
+  const content = active ? (files?.[active] ?? '') : '';
+  useEffect(() => {
+    if (following && pre.current) pre.current.scrollTop = pre.current.scrollHeight;
+  }, [following, content]);
   if (!files || !paths.length) return <p className="p-8 text-center text-sm text-slate-400">还没有代码。</p>;
   return (
     <div className="flex h-full" data-testid="code-view">
@@ -36,10 +65,15 @@ export function CodeView({ files, name = 'app', seq = null }: { files: Files | n
           {paths.map((p) => (
             <li key={p}>
               <button
-                onClick={() => setSel(p)}
-                className={`w-full truncate px-3 py-1 text-left ${p === active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                onClick={() => {
+                  setSel(p);
+                  setPinned(p !== followPath);
+                }}
+                className={`flex w-full items-center gap-1.5 truncate px-3 py-1 text-left ${p === active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'}`}
+                data-testid="code-file"
               >
-                {p}
+                {writing.includes(p) && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-amber-400" title="正在写入" />}
+                <span className="truncate">{p}</span>
               </button>
             </li>
           ))}
@@ -48,9 +82,25 @@ export function CodeView({ files, name = 'app', seq = null }: { files: Files | n
           ⬇ 下载 zip
         </button>
       </div>
-      <pre className="min-w-0 flex-1 overflow-auto bg-slate-950 p-4 text-xs leading-relaxed text-slate-100">
-        <code>{files[active]}</code>
-      </pre>
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {followPath && (
+          <div className="flex items-center justify-between bg-slate-900 px-4 py-1.5 text-xs text-slate-300" data-testid="code-following">
+            <span>
+              {following ? '正在跟随' : '已暂停跟随'} · <span className="text-amber-300" data-testid="code-active">{active}</span>
+              {writing.includes(active) && <span className="ml-1 text-slate-400">写入中…</span>}
+            </span>
+            {!following && (
+              <button onClick={() => { setSel(followPath); setPinned(false); }} className="rounded bg-slate-700 px-2 py-0.5 text-slate-100">
+                回到 {followPath}
+              </button>
+            )}
+          </div>
+        )}
+        <pre ref={pre} className="min-h-0 flex-1 overflow-auto bg-slate-950 p-4 text-xs leading-relaxed text-slate-100" data-testid="code-content">
+          <code>{content}</code>
+          {writing.includes(active) && <span className="caret" />}
+        </pre>
+      </div>
     </div>
   );
 }

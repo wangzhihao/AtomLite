@@ -81,3 +81,22 @@ test('treats stray angle brackets in text as text', () => {
   const r = summarize(run(['a < b and <div> and <de', 'f>']).events);
   assert.equal(r.text, 'a < b and <div> and <def>');
 });
+
+test('file deltas stream the raw file text before it closes, for any chunking', () => {
+  for (const size of [1, 3, 7, 48]) {
+    const p = new TagParser();
+    const events: TagEvent[] = [];
+    for (let i = 0; i < SAMPLE.length; i += size) events.push(...p.push(SAMPLE.slice(i, i + size)));
+    const deltas = events.filter((e) => e.type === 'file_delta' && e.path === 'App.jsx').map((e) => (e as { text: string }).text);
+    const done = events.find((e) => e.type === 'file_end' && e.path === 'App.jsx') as { content: string };
+    const streamed = deltas.join('');
+    assert.ok(deltas.length > 1 || size === 48, `size ${size}: expected several deltas`);
+    // 增量是原始文本的前缀，去掉首个换行后就是最终内容的前缀
+    assert.ok(done.content.startsWith(streamed.replace(/^\n/, '').slice(0, done.content.length - 10)), `size ${size}`);
+    assert.ok(!streamed.includes('</file'), `size ${size}: delta leaked the closing tag`);
+    // 增量出现在 file_end 之前
+    const iFirst = events.findIndex((e) => e.type === 'file_delta' && e.path === 'App.jsx');
+    const iEnd = events.indexOf(done as unknown as TagEvent);
+    assert.ok(iFirst >= 0 && iFirst < iEnd);
+  }
+});
