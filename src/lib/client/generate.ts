@@ -1,12 +1,20 @@
 'use client';
 import { SSEParser } from '@/lib/shared/sse';
-import type { AgentEvent } from '@/lib/shared/types';
+import type { AgentEvent, CheckError } from '@/lib/shared/types';
 import { ApiError } from './api';
 
 /** 调用 SSE 生成接口，逐个回调事件；返回时流已结束 */
 export async function streamGenerate(
   projectId: string,
-  body: { message?: string; mode?: 'auto' | 'fix'; errors?: string[]; resume?: boolean },
+  body: {
+    message?: string;
+    mode?: 'auto' | 'fix';
+    errors?: (string | CheckError)[];
+    runId?: string;
+    auto?: boolean;
+    clarified?: boolean;
+    resume?: boolean;
+  },
   onEvent: (e: AgentEvent) => void,
   signal: AbortSignal,
 ) {

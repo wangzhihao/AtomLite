@@ -209,14 +209,15 @@ export default function Workspace() {
         abortRef.current = null;
         // 有新版本时进入运行检查：等预览渲染后 3 秒观察窗口结束
         if (runId && versionId) {
-          const prev = heal.current;
+          // 自动修复轮次沿用同一条自愈链的计数（即使服务端没能复用原 run，也不会无限自动修复）
+          const prev = body.auto ? heal.current : null;
           heal.current = {
             runId,
             versionId,
             armed: true,
             issues: [],
-            autoFixes: prev?.runId === runId ? prev.autoFixes : 0,
-            signatures: prev?.runId === runId ? prev.signatures : [],
+            autoFixes: prev?.autoFixes ?? 0,
+            signatures: prev?.signatures ?? [],
           };
           if (healTimer.current) clearTimeout(healTimer.current);
           healTimer.current = setTimeout(() => void finishVerify(), VERIFY_TIMEOUT_MS);
@@ -225,6 +226,8 @@ export default function Workspace() {
           setHealing(false);
         }
         await load();
+        // 每个新版本都重新挂载 iframe：内容与上一版相同时（例如修复没改动），srcdoc 不变也要重新运行，才能做运行检查
+        if (versionId) setReloadKey((k) => k + 1);
         setLive(null);
         setRunning(false);
       }
@@ -508,7 +511,7 @@ export default function Workspace() {
                 onRestored={() => {
                   setViewing(null);
                   setIssues([]);
-                  void load();
+                  void load().then(() => setReloadKey((k) => k + 1));
                 }}
               />
             )}
