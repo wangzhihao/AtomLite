@@ -47,7 +47,15 @@ test('/stats 指标页：统计首次通过、自动修复与错误类型', asyn
   await page.waitForURL(/\/projects\/[0-9a-f-]{36}$/);
   await waitVersion(page, 2);
   // v1 运行出错后 run 先记为未通过，自动修复的 v2 运行检查通过后才记为最终可用
-  await expect.poll(async () => (await (await page.request.get('/api/stats')).json()).metrics.overall.finalOkRate, { timeout: 15_000 }).toBe(1);
+  await expect
+    .poll(
+      async () => {
+        const { overall } = (await (await page.request.get('/api/stats')).json()).metrics;
+        return `${overall.runs}:${overall.finalOkRate}`;
+      },
+      { timeout: 20_000 },
+    )
+    .toBe('2:1');
 
   await page.getByTestId('nav-stats').click();
   await page.waitForURL('**/stats');

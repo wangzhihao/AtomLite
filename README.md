@@ -30,7 +30,17 @@ Atoms Lite（迷你 Atoms）：用一句话需求驱动 AI Agent 生成 Web 应�
 | 需求澄清卡片 | 信息不足时 Nora 提 2 到 4 个问题（本轮不生成代码），可填写或“先帮我随便做”；回答后不再重复提问 | 个人博客先澄清再生成；跳过时规划里列出假设 |
 | 一键发布公开链接 | `/s/[slug]` 全屏沙箱运行、自动生成标题描述、“Built with Atoms Lite” 角标；发布只移动指针，再次发布才更新 | 无痕会话访问；发布后修改不影响发布页，再次发布才更新；访客 Remix 后可继续编辑 |
 
-Could 项（验收 QA Agent、团队配置面板、图片上传、zip 下载、Discover 广场、App Cloud）尚未实现。
+## Could 范围
+
+| Could 能力 | 实现 | 端到端验收（`e2e/could.spec.ts`） |
+| --- | --- | --- |
+| 验收 QA Agent | Quinn 根据规格功能点和源码生成声明式交互测试（fill / click / expectText / expectVisible），在屏幕外独立的沙箱 iframe 中执行（存储从空开始、不回写、屏蔽弹窗）；失败项交给 Max，在同一个 run 的修复额度内自动修复后再次验收 | 全部通过且不污染用户数据；功能缺陷被发现 → 自动修复 → 再次验收通过 |
+| 团队配置面板 | 工作区顶栏“团队”：开关 Nora / Mia / Sage / Quinn（Kai、Max 必需），保存在本浏览器，随生成请求下发给编排器 | 关掉后新建只有 Kai；设置保留 |
+| 代码查看与 zip 下载 | 代码标签只读查看；zip 含源文件、可直接打开的 `index.html` 和说明（自写的无压缩 zip，无依赖） | 下载文件结构校验 |
+| Discover 广场 + Remix | `/discover` 公开作品列表，首页“精选公开作品”，卡片一键 Remix | 发布后出现在首页和广场，从卡片 Remix |
+| /stats 指标页（第 10 节） | 首次通过率、自检修复率、最终可用率、平均修复轮数、单个可用应用成本、缓存命中率，按意图和错误类型分组 | 一次直接通过 + 一次自动修复后指标正确 |
+
+未实现：用户上传图片（依赖 Supabase Storage）、App Cloud（生成应用自带数据存储）。
 
 ## 快速开始
 
@@ -62,13 +72,16 @@ npm run dev          # http://localhost:3000
 
 ### 部署到自己的服务器（EC2）
 
-本机只运行、不构建：CI 产出 Next.js standalone 产物（`atomlite-standalone` artifact），`deploy/deploy-ec2.sh` 下载后解压到 `/home/ubuntu/atomlite/releases/<sha>`，切换 `current` 软链并重启 systemd 服务，健康检查失败会自动回滚。
+`deploy/deploy-ec2.sh` 把 Next.js standalone 产物放到 `/home/ubuntu/atomlite/releases/<sha>`，切换 `current` 软链并重启 systemd 服务，健康检查失败会自动回滚。产物可以在本机构建，也可以用 CI 构建好的 `atomlite-standalone` artifact。
 
 ```bash
 sudo cp deploy/atomlite.service /etc/systemd/system/   # 首次：安装服务（端口等配置在 /home/ubuntu/atomlite/atomlite.env）
-deploy/deploy-ec2.sh            # 部署当前分支最近一次成功的 CI；也可传入 run id
+deploy/deploy-ec2.sh --local    # 本机构建并部署（最快）
+deploy/deploy-ec2.sh            # 或：部署当前分支最近一次成功的 CI（也可传入 run id）
 sudo journalctl -u atomlite -f  # 查看日志
 ```
+
+这台机器上还跑着其他服务，所以本机的构建和测试都通过 `scripts/capped.sh` 放进有内存上限的 cgroup（超限时只会杀掉构建自己）。
 
 服务器上使用本地文件存储（`/home/ubuntu/atomlite/data`），服务内存上限 600 MB。
 
@@ -76,8 +89,9 @@ sudo journalctl -u atomlite -f  # 查看日志
 
 ```bash
 npm run typecheck
-npm run test:unit    # 标签解析器（任意分块一致性）、预览组装器、SSE 解析
+npm run test:unit    # 标签解析器（任意分块一致性）、预览组装器、SSE、zip、指标公式
 npm run build && npm run test:e2e   # Playwright，自动以 Mock LLM + 本地存储启动 next start
+scripts/check-local.sh              # 以上全部，在内存受限的 cgroup 里按 CI 的顺序跑一遍
 ```
 
 CI（`.github/workflows/ci.yml`）在每次推送时跑完上述全部步骤，并上传截图（`screens/`）和 Playwright 报告。
@@ -107,5 +121,7 @@ supabase/migrations/        建表与 RLS
 - **LLM 接入用官方 Anthropic SDK，而非 Vercel AI SDK。** 直接拿到 `cache_read_input_tokens` 等用量字段，便于第 10 节的成本统计；流式接口一样简单。未保留 OpenAI 兼容端点。
 - **普通 CRUD 也走服务端 API 路由**（文档允许前端直连 Supabase）。这样本地存储与 Supabase 两种模式共用同一套前端代码，也便于在没有 Supabase 的 CI 中做端到端测试；Supabase 模式下服务端以用户身份访问，RLS 依旧生效。
 - **UI 只用 Tailwind**，未引入 shadcn/ui 组件库。
-- **代码查看用纯文本 `<pre>`**，未接 Shiki 高亮（Could 项）。
+- **代码查看用纯文本 `<pre>`**，未接 Shiki 高亮。
+- **验收 QA 用声明式步骤而不是任意脚本**：模型输出的步骤经过白名单清洗后由注入的执行器运行，更可控，也便于展示每个功能点的结果。
+- **Quinn 默认关闭**（每轮多一次强模型调用），在团队面板中打开。
 - **本地文件存储 + Mock LLM** 是额外增加的开发 / 测试模式，不影响线上架构。
