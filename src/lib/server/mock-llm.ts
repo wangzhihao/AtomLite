@@ -108,7 +108,7 @@ function App() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);`;
 
-const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail)\]/g;
+const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail|stall)\]/g;
 
 const BROKEN_JSX = APP_JSX.replace('const [text, setText]', 'const boom = undefined.value;\n  const [text, setText]');
 const SYNTAX_JSX = APP_JSX.replace('function add(e) {', 'function add(e) {{');
@@ -311,9 +311,23 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
             : call.role === 'qa'
               ? qaTests()
               : engineer(call.input);
-  const slow = call.role === 'engineer' && /\[slow\]/.test(section(call.input, '本轮修改要求') + section(call.input, '用户需求'));
+  const req = section(call.input, '本轮修改要求') + section(call.input, '用户需求');
+  const slow = call.role === 'engineer' && /\[slow\]/.test(req);
   const delay = slow ? 250 : env.mockDelayMs;
   const size = 48;
+  // 强模型角色先输出思路摘要（与真实模型的 summarized thinking 对应）
+  const thinking =
+    call.role === 'engineer'
+      ? '先确定数据结构：条目包含文本和完成状态，存进 localStorage。再搭界面：标题、输入框和添加按钮、条目列表。最后把主色接到 design.json 的 CSS 变量上。'
+      : call.role === 'fixer'
+        ? '先读报错定位到出错的那一行，判断是数据为空还是写法错误，只改这一处，其余逻辑保持不变。'
+        : '';
+  for (let i = 0; i < thinking.length; i += 16) {
+    await sleep(delay, call.signal);
+    call.onThinking?.(thinking.slice(i, i + 16));
+  }
+  // [stall]：模型长时间没有任何输出（测试“响应较慢”提示）
+  if (call.role === 'engineer' && /\[stall\]/.test(req)) await sleep(env.mockStallMs, call.signal);
   for (let i = 0; i < text.length; i += size) {
     await sleep(delay, call.signal);
     call.onText?.(text.slice(i, i + size));

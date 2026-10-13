@@ -102,6 +102,23 @@ export type QAStep =
 export type QATest = { feature: string; steps: QAStep[] };
 export type QAResult = { feature: string; ok: boolean; error?: string };
 
+/** 进度步骤（设计文档第 3 节）：新建 规划 → 设计 → 编码 → 检查 → 保存 → 建议；修改从编码开始；修复从修复开始 */
+export type StepId = 'plan' | 'design' | 'code' | 'fix' | 'check' | 'save' | 'suggest';
+export type ProgressStep = { id: StepId; label: string };
+export type ProgressData = {
+  step: StepId | null;
+  agent: AgentId | null;
+  elapsedMs: number;
+  /** 本轮已输出的字符数（说明、代码、思路），用于显示“约 N tokens” */
+  outputChars: number;
+  /** 距模型上次输出多久；超过 stallAfterMs 时前端提示“模型响应较慢” */
+  idleMs: number;
+  stallAfterMs: number;
+  filesDone: number;
+  filesPlanned: number | null;
+  bytes: number;
+};
+
 /** SSE 事件协议（设计文档第 8 节） */
 export type AgentEvent =
   | { event: 'run_started'; data: { runId: string; intent: RunIntent } }
@@ -117,7 +134,11 @@ export type AgentEvent =
   | { event: 'design'; data: { design: Record<string, unknown> } }
   | { event: 'clarify'; data: { questions: ClarifyQuestion[] } }
   | { event: 'check_failed'; data: { errors: CheckError[]; round: number } }
-  | { event: 'suggestions'; data: { items: string[] } };
+  | { event: 'suggestions'; data: { items: string[] } }
+  | { event: 'steps'; data: { steps: ProgressStep[]; typicalMs: number } }
+  | { event: 'step'; data: { id: StepId } }
+  | { event: 'progress'; data: ProgressData }
+  | { event: 'thinking_delta'; data: { agent: AgentId; text: string } };
 
 export const LIMITS = {
   messageChars: 4000,
