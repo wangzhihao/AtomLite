@@ -6,7 +6,8 @@ import { mockStream } from './mock-llm';
 
 export type ModelTier = 'fast' | 'strong';
 export type LLMUsage = { inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number };
-export type LLMResult = { usage: LLMUsage; model: string; text: string };
+/** stopReason 为 max_tokens 表示输出被长度上限截断 */
+export type LLMResult = { usage: LLMUsage; model: string; text: string; stopReason: string | null };
 
 export type LLMCall = {
   role: AgentId;
@@ -18,6 +19,8 @@ export type LLMCall = {
   onText?: (text: string) => void;
   /** 模型思路摘要的增量（强模型开启 summarized 思路显示） */
   onThinking?: (text: string) => void;
+  /** 任务预算（tokens，≥ 20000）：告诉模型本次可用的总量（思考 + 输出），让它掂量着写完，而不是想到一半被截断 */
+  taskBudget?: number;
 };
 
 let client: Anthropic | null = null;
@@ -57,14 +60,20 @@ export async function streamLLM(call: LLMCall): Promise<LLMResult> {
     max_tokens: call.maxTokens,
     system: [{ type: 'text', text: call.system, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: call.input }],
-    output_config: { effort: call.tier === 'strong' ? env.effort : 'low' },
+    output_config: {
+      effort: call.tier === 'strong' ? env.effort : 'low',
+      ...(call.taskBudget ? { task_budget: { type: 'tokens', total: call.taskBudget } } : {}),
+    },
   };
+  const betas: string[] = [];
+  if (call.taskBudget) betas.push('task-budgets-2026-03-13');
   if (call.tier === 'strong') {
-    params.betas = ['server-side-fallback-2026-07-01'];
+    betas.push('server-side-fallback-2026-07-01');
     params.fallbacks = 'default';
     // 思考本来就在发生，计费相同；summarized 让前端能看到“在想什么”，而不是长时间的空白
     params.thinking = { type: 'adaptive', display: 'summarized' };
   }
+  if (betas.length) params.betas = betas;
   const stream = client.beta.messages.stream(params as unknown as Parameters<typeof client.beta.messages.stream>[0], {
     signal: call.signal,
   });
@@ -92,6 +101,7 @@ export async function streamLLM(call: LLMCall): Promise<LLMResult> {
   return {
     model: final.model,
     text,
+    stopReason: final.stop_reason ?? null,
     usage: { inputTokens, outputTokens, cacheReadTokens, costUsd: cost(call.tier, inputTokens, cacheReadTokens, outputTokens) },
   };
 }

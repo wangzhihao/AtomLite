@@ -18,7 +18,7 @@ const TARGETS: { key: keyof MetricGroup; label: string; target: string; fmt: (v:
   { key: 'cacheHitRate', label: '缓存命中率', target: '≥ 50%（修改轮次）', fmt: pct, ok: (v) => v >= 0.5 },
 ];
 
-const INTENT: Record<string, string> = { create: '新建', edit: '修改', fix: '手动修复' };
+const INTENT: Record<string, string> = { create: '新建', edit: '修改', fix: '手动修复', chat: '对话' };
 const KIND: Record<string, string> = { syntax: '语法错误', runtime: '运行时异常', console: 'console 报错', blank: '白屏', qa: '验收未通过' };
 
 export default function StatsPage() {

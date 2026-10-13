@@ -108,7 +108,7 @@ function App() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);`;
 
-const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail|stall)\]/g;
+const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail|stall|truncate|textonly)\]/g;
 
 const BROKEN_JSX = APP_JSX.replace('const [text, setText]', 'const boom = undefined.value;\n  const [text, setText]');
 const SYNTAX_JSX = APP_JSX.replace('function add(e) {', 'function add(e) {{');
@@ -125,7 +125,7 @@ function titleFrom(req: string) {
 }
 
 function section(input: string, title: string) {
-  const m = new RegExp(`## ${title}\\n\\n([\\s\\S]*?)(?=\\n\\n## |\\n\\n只输出|\\n\\n允许提问|\\n\\n不允许提问|$)`).exec(input);
+  const m = new RegExp(`## ${title}\\n\\n([\\s\\S]*?)(?=\\n\\n## |\\n\\n只输出|\\n\\n篇幅要克制|\\n\\n允许提问|\\n\\n不允许提问|$)`).exec(input);
   return m?.[1]?.trim() ?? '';
 }
 
@@ -186,6 +186,10 @@ function engineer(input: string) {
   const editing = input.includes('## 本轮修改要求');
   const instruction = section(input, editing ? '本轮修改要求' : '用户需求');
   const out: string[] = [];
+  // [textonly]：只用文字回答、不写文件（例如需要先确认或说明做不到）
+  if (instruction.includes('[textonly]')) {
+    return '这个需求我想先确认一下：你要的是可旋转的 3D 模型，还是平面示意图就够了？确认后我再动手。';
+  }
 
   if (!editing) {
     const specName = /"appName":\s*"([^"]*)"/.exec(input)?.[1];
@@ -279,6 +283,20 @@ function qaTests() {
   });
 }
 
+/** 路由：有具体修改动词就是 change，否则问句 / 打招呼算 chat */
+function router(input: string) {
+  const msg = (/## 用户消息\n\n([\s\S]*)$/.exec(input)?.[1] ?? input).trim();
+  const change = /(改|加|做|删|换|调整|生成|变成|实现|修复|添加|去掉|增加|优化|\[\w+\])/.test(msg);
+  const chatty = /^(hi|hello|hey|你好|嗨|在吗)|[?？]|吗|么|能不能|为什么|怎么/i.test(msg);
+  const member = /(leo|nora|mia|kai|max|sage|quinn)/i.exec(msg)?.[1]?.toLowerCase() ?? null;
+  return JSON.stringify({ intent: chatty && !change ? 'chat' : 'change', member });
+}
+
+function chatReply(input: string) {
+  const msg = /用户：([\s\S]*)$/.exec(input)?.[1]?.trim() ?? '';
+  return `我在，可以直接对话。你刚才说“${msg.slice(0, 30)}”。想改应用的话，直接描述要改的地方就行，比如“主色改成绿色”。`;
+}
+
 function advisor() {
   return JSON.stringify({ suggestions: ['主色改成绿色', '加一个导出 CSV 按钮', '改成深色主题'] });
 }
@@ -299,8 +317,13 @@ function sleep(ms: number, signal: AbortSignal) {
 }
 
 export async function mockStream(call: LLMCall): Promise<LLMResult> {
-  const text =
-    call.role === 'planner'
+  const isChat = call.input.startsWith('## 对话');
+  const isRouter = call.role === 'leader' && !isChat;
+  const text = isRouter
+    ? router(call.input)
+    : isChat
+      ? chatReply(call.input)
+      : call.role === 'planner'
       ? planner(call.input)
       : call.role === 'designer'
         ? designer()
@@ -316,8 +339,9 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
   const delay = slow ? 250 : env.mockDelayMs;
   const size = 48;
   // 强模型角色先输出思路摘要（与真实模型的 summarized thinking 对应）
-  const thinking =
-    call.role === 'engineer'
+  const thinking = isChat || isRouter
+    ? ''
+    : call.role === 'engineer'
       ? '先确定数据结构：条目包含文本和完成状态，存进 localStorage。再搭界面：标题、输入框和添加按钮、条目列表。最后把主色接到 design.json 的 CSS 变量上。'
       : call.role === 'fixer'
         ? '先读报错定位到出错的那一行，判断是数据为空还是写法错误，只改这一处，其余逻辑保持不变。'
@@ -328,6 +352,10 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
   }
   // [stall]：模型长时间没有任何输出（测试“响应较慢”提示）
   if (call.role === 'engineer' && /\[stall\]/.test(req)) await sleep(env.mockStallMs, call.signal);
+  // [truncate]：思考用光了输出上限，一个字也没写出来就被截断
+  if (call.role === 'engineer' && !isChat && /\[truncate\]/.test(req)) {
+    return { model: 'mock', text: '', stopReason: 'max_tokens', usage: { inputTokens: 1000, outputTokens: call.maxTokens, cacheReadTokens: 0, costUsd: 0 } };
+  }
   for (let i = 0; i < text.length; i += size) {
     await sleep(delay, call.signal);
     call.onText?.(text.slice(i, i + size));
@@ -335,6 +363,7 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
   return {
     model: 'mock',
     text,
+    stopReason: 'end_turn',
     usage: {
       inputTokens: Math.ceil((call.system.length + call.input.length) / 4),
       outputTokens: Math.ceil(text.length / 4),

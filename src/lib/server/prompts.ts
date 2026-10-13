@@ -13,6 +13,7 @@ const RUNTIME_RULES = `## 运行环境（必须严格遵守）
 - JSX 由浏览器端 Babel Standalone 编译（仅 react preset）。所有 .jsx 文件按文件名顺序作为经典脚本拼接加载，共享全局作用域；App.jsx 最后加载。
 - 不同文件里不要重复声明同名的顶层变量（例如每个文件都写 const { useState } = React 会报重复声明）；需要时把 hooks 解构写在 App.jsx 之外的唯一一个文件里，或直接用 React.useState。
 - App.jsx 必须在末尾挂载：ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+- 需要 3D 时可以直接用全局 THREE（three.js r159，已自托管，代码里用到 THREE 时自动加载）；没有 OrbitControls 等扩展，旋转、缩放请自己处理鼠标 / 触摸事件；渲染器挂在 useRef 的容器上，组件卸载时 dispose。复杂的真实模型可以用几何体组合近似（如用多个变形的球体表示脑区）。
 - 禁止任何外部网络请求（fetch 外部 URL、外部图片、外部字体、CDN 脚本都不可用）。图片用首字母头像、渐变和 CSS 图形代替；字体只用系统字体栈。
 - 持久化用 localStorage（已注入兼容实现），读写都要 try/catch 并提供默认值。
 - 内容与代码分离：文章、商品、列表等内容放在 JSON 数据文件（如 posts.json），应用通过 window.__APP_DATA__.posts 读取（键为去掉 .json 的文件名）。
@@ -157,6 +158,30 @@ export const QA_SYSTEM = `你是 Quinn，Atoms Lite 团队的验收测试员。�
 - 每个测试独立：需要数据时先自己通过界面添加。
 - 不要测试需要网络、文件、剪贴板、弹窗确认（confirm/alert）或真实时间流逝的功能。`;
 
+/** 路由：判断一条消息是要改应用，还是在对话（提问、打招呼、讨论），以及点名了哪位成员 */
+export const ROUTER_SYSTEM = `你是 Leo，Atoms Lite 团队的负责人，负责把用户的消息分派给团队。
+判断用户这条消息是要求修改 / 新建应用（change），还是在对话（chat）：打招呼、提问、讨论想法、询问能不能做、问进度或原因，都算 chat。
+只要消息里包含任何具体的修改要求，就是 change。拿不准时选 change。
+同时判断用户点名了哪位成员：Leo（负责人）、Nora（规划）、Mia（设计）、Kai（工程）、Max（修复）、Sage（建议）、Quinn（验收），没有点名就是 null。
+
+只输出一个 JSON 对象：{"intent": "change" | "chat", "member": "leo" | "nora" | "mia" | "kai" | "max" | "sage" | "quinn" | null}`;
+
+const PERSONA_LINE: Record<string, string> = {
+  leader: '你是 Leo，团队负责人，说话简短，像项目经理。',
+  planner: '你是 Nora，产品经理兼架构师，条理清晰，爱列要点。',
+  designer: '你是 Mia，设计师，有审美判断，会说明理由。',
+  engineer: '你是 Kai，前端工程师，务实、简洁。',
+  fixer: '你是 Max，修复工程师，冷静，先说原因再说改法。',
+  advisor: '你是 Sage，产品顾问，友好，给选项不下结论。',
+  qa: '你是 Quinn，验收测试员，一丝不苟，只报事实。',
+};
+
+export function chatSystem(agent: string) {
+  return `${PERSONA_LINE[agent] ?? PERSONA_LINE.engineer}
+你在 Atoms Lite 团队里和用户对话。Atoms Lite 用一句话需求生成运行在浏览器沙箱里的纯前端应用（React 18 + Tailwind，可按需使用 three.js 做 3D，不能联网、没有后端）。
+用中文回答，三五句话以内，具体、诚实：做不到的直接说明原因和替代方案；需要改应用时，告诉用户可以怎么描述需求（例如给出一句可以直接发送的修改要求）。不要输出代码，也不要输出 <file> 标签。`;
+}
+
 // ---------------------------------------------------------------- 输入组装
 
 const CONTEXT_FULL_BYTES = 30 * 1024;
@@ -211,6 +236,7 @@ export function buildEngineerInput(o: {
   if (h) parts.push(`## 最近的对话\n\n${h}`);
   parts.push(editing ? `## 本轮修改要求\n\n${instruction}` : `## 用户需求\n\n${instruction}`);
   if (editing) parts.push('只输出需要变更的文件，每个文件写完整内容。');
+  parts.push('篇幅要克制：先做出能运行、能演示核心交互的版本，数据给几条代表性的即可，不要追求面面俱到。请用中文思考。');
   return parts.join('\n\n');
 }
 
@@ -227,7 +253,20 @@ export function buildFixerInput(o: { errors: CheckError[]; files: Files }) {
     `## 报错信息\n\n${errs}`,
     `## 相关文件\n\n${fileBlock(o.files, [...new Set(include)])}`,
     others.length ? `其他文件（未发送内容）：${others.join('、')}` : '',
-    '请修复上述报错，只输出被修改的文件。',
+    '请修复上述报错，只输出被修改的文件。请用中文思考。',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+export function buildChatInput(o: { message: string; spec: Spec | null; files: Files; history: Message[] }) {
+  const h = historyBlock(o.history);
+  return [
+    '## 对话',
+    o.spec ? `当前应用：${o.spec.appName}，功能点：${o.spec.features.join('、')}` : Object.keys(o.files).length ? '当前应用已生成。' : '还没有生成应用。',
+    Object.keys(o.files).length ? `文件：${Object.keys(o.files).join('、')}` : '',
+    h ? `最近的对话：\n${h}` : '',
+    `用户：${o.message}`,
   ]
     .filter(Boolean)
     .join('\n\n');
