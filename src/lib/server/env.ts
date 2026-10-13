@@ -20,6 +20,8 @@ export const env = {
       cacheRead: Number(process.env.ATOMS_FAST_PRICE_CACHE_READ ?? 0.01),
     },
   },
+  /** 模型额度用完时让用户联系的邮箱 */
+  supportEmail: process.env.ATOMS_SUPPORT_EMAIL || 'accept.acm@gmail.com',
   /** 模型多久没有输出时提示“响应较慢”（毫秒） */
   stallWarnMs: Number(process.env.ATOMS_STALL_WARN_MS ?? 20_000),
   /** Mock LLM 遇到 [stall] 标记时停顿多久（毫秒），用于测试慢响应提示 */

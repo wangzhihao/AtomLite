@@ -20,7 +20,8 @@ import { TagParser, type TagEvent } from '@/lib/shared/tag-parser';
 import { role, rolesFor, type AgentRole, type RunContext } from './agents';
 import { checkFiles, errorSignature } from './check';
 import { planSteps, ProgressTracker, typicalDurationMs } from './progress';
-import { addUsage, emptyUsage, extractJson, modelFor, streamLLM, type LLMUsage } from './llm';
+import { env } from './env';
+import { addUsage, emptyUsage, extractJson, isQuotaError, modelFor, streamLLM, type LLMUsage } from './llm';
 import { buildChatInput, chatSystem, ROUTER_SYSTEM } from './prompts';
 import type { Store } from './store';
 
@@ -103,6 +104,8 @@ export async function runGeneration(opts: {
   // Leo 分派：先用快速模型判断这条消息是要改应用还是在对话，以及点名了谁（失败时按修改处理）
   let chatAgent: AgentId = 'leader';
   let routeUsage: LLMUsage | null = null;
+  /** 分派时就发现额度用完：不再继续调用其他角色，直接告诉用户 */
+  let quotaErr: unknown = null;
   if (opts.routable && intent !== 'fix') {
     try {
       const res = await streamLLM({
@@ -122,7 +125,8 @@ export async function runGeneration(opts: {
       }
     } catch (err) {
       if (signal.aborted) throw err;
-      console.warn('[router]', err);
+      if (isQuotaError(err)) quotaErr = err;
+      else console.warn('[router]', err);
     }
   }
   emit({ event: 'run_started', data: { runId: run.id, intent } });
@@ -322,6 +326,7 @@ export async function runGeneration(opts: {
   };
 
   try {
+    if (quotaErr) throw quotaErr;
     let summary = '';
     if (intent === 'chat') {
       // 对话：被点名的成员（默认 Leo）直接回答，不改应用、不生成版本
@@ -488,8 +493,8 @@ export async function runGeneration(opts: {
       await persist({ role: 'system', agent: null, content: '已停止生成，保留上一个版本。', meta: { runId: run.id, status: 'cancelled' }, version_id: null });
       return;
     }
-    const readable = err instanceof RunError ? err : new RunError('llm_error', friendlyLLMError(err));
-    if (!(err instanceof RunError)) console.error('[generate]', err);
+    const readable = err instanceof RunError ? err : isQuotaError(err) ? quotaError() : new RunError('llm_error', friendlyLLMError(err));
+    if (!(err instanceof RunError)) console.error('[generate]', readable.code === 'quota' ? 'model quota exhausted' : err);
     emit({ event: 'error', data: { code: readable.code, message: readable.message } });
     await finish('failed', { final_ok: false, first_pass: reused ? run.first_pass : false }, readable.message);
     await persist({ role: 'system', agent: null, content: readable.message, meta: { runId: run.id, status: 'failed', code: readable.code }, version_id: null });
@@ -520,6 +525,14 @@ function sanitizeSpec(out: PlannerOut | null, instruction: string): Spec {
     style: out?.style ? String(out.style) : undefined,
     assumptions: list(out?.assumptions),
   };
+}
+
+/** 模型额度用完：告诉用户是我们的账户没钱了（不是他们的问题），并留下联系方式 */
+function quotaError() {
+  return new RunError(
+    'quota',
+    `抱歉，我们的模型服务额度已经用完（账户余额不足），暂时无法生成，这不是你的操作问题。请联系作者 ${env.supportEmail} 为账户充值，充值后即可继续使用，已有的项目和版本都不会丢失。`,
+  );
 }
 
 function friendlyLLMError(err: unknown): string {

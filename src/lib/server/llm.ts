@@ -106,6 +106,17 @@ export async function streamLLM(call: LLMCall): Promise<LLMResult> {
   };
 }
 
+/**
+ * 模型服务的额度 / 余额用完：402 billing_error，或旧形式的 400“credit balance is too low”。
+ * 这类错误重试没有用，需要账户充值。
+ */
+export function isQuotaError(err: unknown): boolean {
+  const e = err as { status?: number; type?: string; error?: { error?: { type?: string; message?: string } }; message?: string };
+  if (e?.status === 402 || e?.type === 'billing_error' || e?.error?.error?.type === 'billing_error') return true;
+  const msg = `${e?.message ?? ''} ${e?.error?.error?.message ?? ''}`;
+  return /credit balance is too low|billing|insufficient (credit|balance|funds)|quota exceeded|payment required/i.test(msg);
+}
+
 /** 从模型输出中取出第一个 JSON 对象 */
 export function extractJson<T>(text: string): T | null {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
