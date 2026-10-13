@@ -10,13 +10,11 @@ import type {
   VersionMeta,
   VersionSource,
 } from '@/lib/shared/types';
-import { useSupabase } from './env';
 import { db, now, save } from './local-db';
-import { supabaseServer } from './supabase';
 
 /**
- * 数据访问层（设计文档第 7 节）。所有方法都以当前用户身份执行：
- * Supabase 模式下由 RLS 保证只能访问自己的数据，本地模式下由代码检查 owner。
+ * 数据访问层（设计文档第 7 节）。所有方法都以当前用户身份执行，每次读写都检查归属：
+ * 他人的项目读不到、改不了，接口层统一返回 404。
  */
 export interface Store {
   listProjects(): Promise<Project[]>;
@@ -50,10 +48,8 @@ export interface Store {
 }
 
 export function getStore(user: SessionUser): Store {
-  return useSupabase() ? supabaseStore(user) : localStore(user);
+  return localStore(user);
 }
-
-// ---------------------------------------------------------------- 本地实现
 
 /** 本地模式下，进行中但服务重启后不可能再完成的 run 视为失效 */
 const STALE_RUN_MS = 10 * 60 * 1000;
@@ -210,142 +206,6 @@ function localStore(user: SessionUser): Store {
         .runs.filter((r) => r.user_id === user.id)
         .sort((a, b) => b.started_at.localeCompare(a.started_at))
         .slice(0, limit);
-    },
-  };
-}
-
-// ---------------------------------------------------------------- Supabase 实现
-
-function supabaseStore(user: SessionUser): Store {
-  const sb = supabaseServer();
-  const check = <T>(res: { data: T; error: { message: string } | null }) => {
-    if (res.error) throw new Error(res.error.message);
-    return res.data;
-  };
-  const touch = async (projectId: string, extra: Partial<Project> = {}) =>
-    check(
-      await (await sb)
-        .from('projects')
-        .update({ ...extra, updated_at: now() })
-        .eq('id', projectId),
-    );
-  return {
-    async listProjects() {
-      return check(await (await sb).from('projects').select('*').order('updated_at', { ascending: false })) as Project[];
-    },
-    async createProject(name, remixedFrom = null) {
-      return check(
-        await (await sb).from('projects').insert({ name, owner_id: user.id, remixed_from: remixedFrom }).select('*').single(),
-      ) as Project;
-    },
-    async publishProject(id, slug, versionId) {
-      return check(
-        await (await sb)
-          .from('projects')
-          .update({ published_slug: slug, published_version_id: versionId, updated_at: now() })
-          .eq('id', id)
-          .select('*')
-          .maybeSingle(),
-      ) as Project | null;
-    },
-    async getProject(id) {
-      return check(await (await sb).from('projects').select('*').eq('id', id).maybeSingle()) as Project | null;
-    },
-    async renameProject(id, name) {
-      return check(
-        await (await sb).from('projects').update({ name, updated_at: now() }).eq('id', id).select('*').maybeSingle(),
-      ) as Project | null;
-    },
-    async deleteProject(id) {
-      const rows = check(await (await sb).from('projects').delete().eq('id', id).select('id')) as { id: string }[];
-      return rows.length > 0;
-    },
-    async listMessages(projectId) {
-      return check(
-        await (await sb).from('messages').select('*').eq('project_id', projectId).order('created_at'),
-      ) as Message[];
-    },
-    async addMessage(m) {
-      return check(await (await sb).from('messages').insert(m).select('*').single()) as Message;
-    },
-    async updateMessage(id, patch) {
-      check(await (await sb).from('messages').update(patch).eq('id', id));
-    },
-    async getVersion(id) {
-      return check(await (await sb).from('versions').select('*').eq('id', id).maybeSingle()) as Version | null;
-    },
-    async setVersionVerified(id, verified) {
-      check(await (await sb).from('versions').update({ verified }).eq('id', id));
-    },
-    async listVersions(projectId) {
-      return check(
-        await (await sb)
-          .from('versions')
-          .select('id, project_id, seq, summary, source, verified, run_id, created_at')
-          .eq('project_id', projectId)
-          .order('seq', { ascending: false }),
-      ) as VersionMeta[];
-    },
-    async createVersion(projectId, v) {
-      const last = check(
-        await (await sb)
-          .from('versions')
-          .select('seq')
-          .eq('project_id', projectId)
-          .order('seq', { ascending: false })
-          .limit(1),
-      ) as { seq: number }[];
-      const version = check(
-        await (await sb)
-          .from('versions')
-          .insert({ ...v, project_id: projectId, seq: (last[0]?.seq ?? 0) + 1 })
-          .select('*')
-          .single(),
-      ) as Version;
-      await touch(projectId, { current_version_id: version.id });
-      return version;
-    },
-    async createRun(r) {
-      return check(
-        await (await sb)
-          .from('runs')
-          .insert({ ...r, user_id: user.id, status: 'running' })
-          .select('*')
-          .single(),
-      ) as Run;
-    },
-    async getRun(id) {
-      return check(await (await sb).from('runs').select('*').eq('id', id).maybeSingle()) as Run | null;
-    },
-    async updateRun(id, patch) {
-      check(await (await sb).from('runs').update(patch).eq('id', id));
-    },
-    async findRunningRun(projectId) {
-      const cutoff = new Date(Date.now() - STALE_RUN_MS).toISOString();
-      const rows = check(
-        await (await sb)
-          .from('runs')
-          .select('*')
-          .eq('project_id', projectId)
-          .eq('status', 'running')
-          .gt('started_at', cutoff)
-          .limit(1),
-      ) as Run[];
-      return rows[0] ?? null;
-    },
-    async countRunsSince(sinceIso) {
-      const res = await (await sb)
-        .from('runs')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .gte('started_at', sinceIso);
-      if (res.error) throw new Error(res.error.message);
-      return res.count ?? 0;
-    },
-    async listRuns(limit) {
-      return check(
-        await (await sb).from('runs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(limit),
-      ) as Run[];
     },
   };
 }

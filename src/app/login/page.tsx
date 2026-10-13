@@ -14,7 +14,6 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [info, setInfo] = useState('');
 
   useEffect(() => {
     getMe().then(setMe, () => setMe(null));
@@ -26,16 +25,13 @@ function LoginForm() {
     e.preventDefault();
     setBusy(true);
     setError('');
-    setInfo('');
     try {
       const path = binding ? '/api/auth/link' : mode === 'login' ? '/api/auth/login' : '/api/auth/signup';
       await api(path, { method: 'POST', json: { email, password } });
       notifyAuthChanged();
       router.push(next);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if ((err as { status?: number }).status === 202) setInfo(msg);
-      else setError(msg);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -109,7 +105,6 @@ function LoginForm() {
             className="w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-brand-500"
           />
           {error && <p className="text-sm text-red-600" data-testid="auth-error">{error}</p>}
-          {info && <p className="text-sm text-emerald-600">{info}</p>}
           <button
             data-testid="auth-submit"
             disabled={busy}

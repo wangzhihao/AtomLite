@@ -1,7 +1,6 @@
 import { fail, json, readJson, withUser } from '@/lib/server/http';
 import { generateQATests } from '@/lib/server/qa';
 
-export const maxDuration = 120;
 
 /** 验收 QA（Quinn）：根据规格功能点生成声明式交互测试，由前端在隔离的沙箱 iframe 中执行 */
 export const POST = withUser(async ({ store }, req: Request, { params }: { params: Promise<{ id: string }> }) => {

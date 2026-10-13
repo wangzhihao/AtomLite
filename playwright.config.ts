@@ -28,8 +28,6 @@ export default defineConfig({
       ATOMS_MOCK_DELAY_MS: '10',
       AUTH_SECRET: 'e2e-secret',
       ANTHROPIC_API_KEY: '',
-      NEXT_PUBLIC_SUPABASE_URL: '',
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: '',
     },
   },
 });

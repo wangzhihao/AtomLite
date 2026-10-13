@@ -1,8 +1,6 @@
 import 'server-only';
 
 export const env = {
-  supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
-  supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
   authSecret: process.env.AUTH_SECRET ?? 'atoms-lite-dev-secret',
   dataDir: process.env.ATOMS_DATA_DIR ?? '.data',
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? '',
@@ -22,10 +20,8 @@ export const env = {
       cacheRead: Number(process.env.ATOMS_FAST_PRICE_CACHE_READ ?? 0.01),
     },
   },
-  supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
   /** Mock LLM 每个分块之间的延迟（毫秒） */
   mockDelayMs: Number(process.env.ATOMS_MOCK_DELAY_MS ?? 15),
 };
 
-export const useSupabase = () => Boolean(env.supabaseUrl && env.supabaseAnonKey);
 export const useMockLLM = () => !env.anthropicKey;
