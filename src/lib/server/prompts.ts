@@ -1,5 +1,6 @@
 import 'server-only';
 import type { CheckError, Files, Message, Spec } from '@/lib/shared/types';
+import type { ModelAttachment } from './uploads';
 import { LIMITS } from '@/lib/shared/types';
 
 /**
@@ -196,7 +197,23 @@ export function fileBlock(files: Files, only?: string[]) {
 function historyBlock(history: Message[]) {
   const recent = history.filter((m) => m.role === 'user' || m.agent === 'engineer' || m.agent === 'fixer').slice(-LIMITS.recentMessages);
   if (!recent.length) return null;
-  return recent.map((m) => `${m.role === 'user' ? '用户' : '团队'}：${m.content.slice(0, 600)}`).join('\n');
+  return recent
+    .map((m) => {
+      const atts = (m.meta?.attachments as { name: string }[] | undefined)?.map((a) => a.name);
+      return `${m.role === 'user' ? '用户' : '团队'}：${m.content.slice(0, 600)}${atts?.length ? `（附件：${atts.join('、')}）` : ''}`;
+    })
+    .join('\n');
+}
+
+/** 附件说明：图片 / PDF 已作为内容发给模型；文本附件的内容放在这里；图片给出可在应用中直接使用的地址 */
+export function attachmentNotes(atts: ModelAttachment[], forEngineer: boolean) {
+  if (!atts.length) return '';
+  const lines = atts.map((a) => {
+    if (a.kind === 'text') return `### ${a.name}（文本）\n\n\`\`\`\n${a.text.slice(0, 50_000)}\n\`\`\``;
+    if (a.kind === 'pdf') return `- ${a.name}（PDF，内容见附件）`;
+    return `- ${a.name}（图片，见附件）${forEngineer ? `；需要在应用里展示时直接用 <img src="${a.url}" />（站内地址，沙箱里可以加载）` : ''}`;
+  });
+  return `\n\n## 用户本轮上传的附件\n\n${lines.join('\n')}`;
 }
 
 export function buildPlannerInput(o: { instruction: string; allowClarify: boolean; history: Message[] }) {

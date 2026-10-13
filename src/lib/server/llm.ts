@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AgentId } from '@/lib/shared/types';
 import { env, useMockLLM } from './env';
 import { mockStream } from './mock-llm';
+import type { ModelAttachment } from './uploads';
 
 export type ModelTier = 'fast' | 'strong';
 export type LLMUsage = { inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number };
@@ -19,6 +20,8 @@ export type LLMCall = {
   onText?: (text: string) => void;
   /** 模型思路摘要的增量（强模型开启 summarized 思路显示） */
   onThinking?: (text: string) => void;
+  /** 用户本轮上传的附件：图片 / PDF 作为内容块发给模型，文本已拼进 input */
+  attachments?: ModelAttachment[];
   /** 任务预算（tokens，≥ 20000）：告诉模型本次可用的总量（思考 + 输出），让它掂量着写完，而不是想到一半被截断 */
   taskBudget?: number;
 };
@@ -59,7 +62,7 @@ export async function streamLLM(call: LLMCall): Promise<LLMResult> {
     model,
     max_tokens: call.maxTokens,
     system: [{ type: 'text', text: call.system, cache_control: { type: 'ephemeral' } }],
-    messages: [{ role: 'user', content: call.input }],
+    messages: [{ role: 'user', content: userContent(call) }],
     output_config: {
       effort: call.tier === 'strong' ? env.effort : 'low',
       ...(call.taskBudget ? { task_budget: { type: 'tokens', total: call.taskBudget } } : {}),
@@ -115,6 +118,17 @@ export function isQuotaError(err: unknown): boolean {
   if (e?.status === 402 || e?.type === 'billing_error' || e?.error?.error?.type === 'billing_error') return true;
   const msg = `${e?.message ?? ''} ${e?.error?.error?.message ?? ''}`;
   return /credit balance is too low|billing|insufficient (credit|balance|funds)|quota exceeded|payment required/i.test(msg);
+}
+
+function userContent(call: LLMCall) {
+  const blocks = (call.attachments ?? []).flatMap((a) =>
+    a.kind === 'image'
+      ? [{ type: 'image', source: { type: 'base64', media_type: a.type, data: a.base64 } }]
+      : a.kind === 'pdf'
+        ? [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.base64 }, title: a.name }]
+        : [],
+  );
+  return blocks.length ? [...blocks, { type: 'text', text: call.input }] : call.input;
 }
 
 /** 从模型输出中取出第一个 JSON 对象 */

@@ -2,7 +2,9 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AttachButton, AttachmentTray, useAttachments } from '@/components/Attachments';
 import { Preview, type PreviewIssue } from '@/components/Preview';
+import type { Attachment } from '@/lib/shared/attachments';
 import { CodeView, PublishButton, VersionsView } from '@/components/workspace/Panels';
 import { QARunner } from '@/components/workspace/QARunner';
 import { loadTeam, TeamPanel } from '@/components/workspace/TeamPanel';
@@ -21,6 +23,7 @@ type RunBody = {
   auto?: boolean;
   clarified?: boolean;
   resume?: boolean;
+  attachments?: string[];
 };
 
 /** 自愈回路的状态：版本落库后等待运行检查，失败则自动修复（同一 run 最多 2 次，同一错误签名重复即停） */
@@ -70,6 +73,7 @@ export default function Workspace() {
   teamRef.current = team;
   const [viewing, setViewing] = useState<Version | null>(null);
   const [pane, setPane] = useState<'chat' | 'preview'>('chat');
+  const attach = useAttachments();
 
   const abortRef = useRef<AbortController | null>(null);
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,7 +179,7 @@ export default function Workspace() {
   );
 
   const run = useCallback(
-    async (body: RunBody, userText: string | null) => {
+    async (body: RunBody, userText: string | null, userAttachments?: Attachment[]) => {
       if (abortRef.current) return;
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -190,6 +194,7 @@ export default function Workspace() {
       if (!followRef.current) setTab((t) => (t === 'versions' ? 'preview' : t));
       setLive({
         userText,
+        userAttachments,
         runId: null,
         intent: null,
         blocks: [],
@@ -400,17 +405,19 @@ export default function Workspace() {
     setTimeout(() => ctrl.abort(), 3000);
   }
 
-  function sendText(text: string, extra: Partial<RunBody> = {}) {
-    if (!text.trim() || abortRef.current) return;
-    run({ message: text.trim(), ...extra }, text.trim());
+  function sendText(text: string, extra: Partial<RunBody> = {}, atts: Attachment[] = []) {
+    if ((!text.trim() && !atts.length) || abortRef.current) return;
+    run({ message: text.trim(), ...extra, ...(atts.length ? { attachments: atts.map((a) => a.id) } : {}) }, text.trim() || '（附件）', atts);
   }
 
   function send(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!input.trim() || running) return;
+    if ((!input.trim() && !attach.ready.length) || running || attach.uploading) return;
     const text = input;
+    const atts = attach.ready;
     setInput('');
-    sendText(text);
+    attach.clear();
+    sendText(text, {}, atts);
   }
 
   function fix() {
@@ -539,8 +546,9 @@ export default function Workspace() {
               {notice}
             </div>
           )}
-          <form onSubmit={send} className="border-t border-slate-200 p-3">
+          <form onSubmit={send} className="border-t border-slate-200 p-3" {...attach.dropProps}>
             <div className="rounded-xl border border-slate-200 p-2 focus-within:border-brand-500">
+              <AttachmentTray items={attach.items} onRemove={attach.remove} />
               <textarea
                 data-testid="chat-input"
                 value={input}
@@ -551,19 +559,27 @@ export default function Workspace() {
                     send();
                   }
                 }}
+                onPaste={attach.onPaste}
                 rows={2}
                 maxLength={LIMITS.messageChars}
-                placeholder={data.version ? '继续提修改，例如“主色改成绿色，加一个导出 CSV 按钮”' : '描述你想要的应用'}
+                placeholder={data.version ? '继续提修改，例如“主色改成绿色，加一个导出 CSV 按钮”；可以粘贴截图' : '描述你想要的应用，可以附上截图或参考图'}
                 className="w-full resize-none bg-transparent px-1 text-sm outline-none placeholder:text-slate-400"
               />
               <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-400">{input.length > 0 ? `${input.length}/${LIMITS.messageChars}` : ''}</span>
+                <span className="flex items-center gap-1 text-xs text-slate-400">
+                  <AttachButton onFiles={(f) => void attach.add(f)} disabled={running} />
+                  {input.length > 0 ? `${input.length}/${LIMITS.messageChars}` : ''}
+                </span>
                 {running ? (
                   <button type="button" onClick={stop} className="rounded-lg bg-slate-900 px-4 py-1.5 text-sm text-white" data-testid="stop">
                     ■ 停止
                   </button>
                 ) : (
-                  <button disabled={!input.trim()} className="rounded-lg bg-brand-600 px-4 py-1.5 text-sm text-white disabled:opacity-40" data-testid="send">
+                  <button
+                    disabled={(!input.trim() && !attach.ready.length) || attach.uploading}
+                    className="rounded-lg bg-brand-600 px-4 py-1.5 text-sm text-white disabled:opacity-40"
+                    data-testid="send"
+                  >
                     发送
                   </button>
                 )}

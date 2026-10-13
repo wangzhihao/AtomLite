@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { AttachmentList } from '@/components/Attachments';
 import { PERSONAS } from '@/components/persona';
+import type { Attachment } from '@/lib/shared/attachments';
 import { timeAgo } from '@/lib/client/api';
 import type { AgentId, CheckError, ClarifyQuestion, Message, ProgressData, ProgressStep, QAResult, RunIntent, Spec, StepId, Usage } from '@/lib/shared/types';
 
@@ -19,6 +21,7 @@ export type LiveBlock = {
 };
 export type LiveRun = {
   userText: string | null;
+  userAttachments?: Attachment[];
   runId: string | null;
   intent: RunIntent | null;
   blocks: LiveBlock[];
@@ -81,12 +84,13 @@ function LeaderLine({ text, live }: { text: string; live?: boolean }) {
   );
 }
 
-export function UserBubble({ text }: { text: string }) {
+export function UserBubble({ text, attachments }: { text: string; attachments?: Attachment[] }) {
   return (
-    <div className="flex justify-end">
+    <div className="flex flex-col items-end">
       <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-brand-600 px-3.5 py-2 text-sm text-white" data-testid="user-message">
         {text}
       </p>
+      {attachments && <AttachmentList atts={attachments} />}
     </div>
   );
 }
@@ -363,7 +367,7 @@ function CheckErrors({ errors }: { errors: CheckError[] }) {
 
 /** 已持久化的一条消息；actions 只传给最后一条可交互的消息 */
 export function MessageItem({ m, actions }: { m: Message; actions?: TimelineActions }) {
-  if (m.role === 'user') return <UserBubble text={m.content} />;
+  if (m.role === 'user') return <UserBubble text={m.content} attachments={m.meta?.attachments as Attachment[] | undefined} />;
   if (m.role === 'system') {
     if (m.meta?.code === 'quota') return <QuotaCard text={m.content} />;
     const failed = m.meta?.status === 'failed';
@@ -440,7 +444,7 @@ export function LiveItem({ live }: { live: LiveRun }) {
   const lastIdx = live.blocks.length - 1;
   return (
     <div className="space-y-4" data-testid="live-run">
-      {live.userText && <UserBubble text={live.userText} />}
+      {live.userText && <UserBubble text={live.userText} attachments={live.userAttachments} />}
       {live.blocks.length === 0 && <LeaderLine text="" live />}
       {live.blocks.map((b, i) => {
         if (b.agent === 'note') return b.checkErrors ? <CheckErrors key={i} errors={b.checkErrors} /> : null;
