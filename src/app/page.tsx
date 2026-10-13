@@ -1,6 +1,8 @@
 'use client';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { PublishedGrid, type PublishedCard } from '@/components/PublishedGrid';
 import { api, ensureUser, notifyAuthChanged } from '@/lib/client/api';
 import type { Project } from '@/lib/shared/types';
 import { LIMITS } from '@/lib/shared/types';
@@ -18,6 +20,11 @@ export default function Home() {
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [featured, setFeatured] = useState<PublishedCard[]>([]);
+
+  useEffect(() => {
+    api<{ items: PublishedCard[] }>('/api/discover?limit=6').then((d) => setFeatured(d.items), () => undefined);
+  }, []);
 
   async function start(text: string) {
     const p = text.trim();
@@ -92,6 +99,18 @@ export default function Home() {
           </button>
         ))}
       </div>
+
+      {featured.length > 0 && (
+        <section className="mt-16 w-full" data-testid="featured">
+          <div className="mb-4 flex items-baseline justify-between">
+            <h2 className="text-lg font-semibold">精选公开作品</h2>
+            <Link href="/discover" className="text-sm text-brand-600 hover:underline">
+              去广场看更多 →
+            </Link>
+          </div>
+          <PublishedGrid items={featured} />
+        </section>
+      )}
     </main>
   );
 }

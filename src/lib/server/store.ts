@@ -45,6 +45,8 @@ export interface Store {
   updateRun(id: string, patch: Partial<Omit<Run, 'id' | 'project_id' | 'user_id'>>): Promise<void>;
   findRunningRun(projectId: string): Promise<Run | null>;
   countRunsSince(sinceIso: string): Promise<number>;
+  /** 当前用户的 run（用于 /stats 指标页） */
+  listRuns(limit: number): Promise<Run[]>;
 }
 
 export function getStore(user: SessionUser): Store {
@@ -203,6 +205,12 @@ function localStore(user: SessionUser): Store {
     async countRunsSince(sinceIso) {
       return db().runs.filter((r) => r.user_id === user.id && r.started_at >= sinceIso).length;
     },
+    async listRuns(limit) {
+      return db()
+        .runs.filter((r) => r.user_id === user.id)
+        .sort((a, b) => b.started_at.localeCompare(a.started_at))
+        .slice(0, limit);
+    },
   };
 }
 
@@ -333,6 +341,11 @@ function supabaseStore(user: SessionUser): Store {
         .gte('started_at', sinceIso);
       if (res.error) throw new Error(res.error.message);
       return res.count ?? 0;
+    },
+    async listRuns(limit) {
+      return check(
+        await (await sb).from('runs').select('*').eq('user_id', user.id).order('started_at', { ascending: false }).limit(limit),
+      ) as Run[];
     },
   };
 }

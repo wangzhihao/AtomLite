@@ -31,10 +31,18 @@ export function Header() {
         Atoms Lite
       </Link>
       <nav className="flex items-center gap-3 text-sm">
+        <Link href="/discover" className="rounded-md px-2 py-1 text-slate-600 hover:bg-slate-100" data-testid="nav-discover">
+          广场
+        </Link>
         {user && (
-          <Link href="/projects" className="rounded-md px-2 py-1 text-slate-600 hover:bg-slate-100" data-testid="nav-projects">
-            我的项目
-          </Link>
+          <>
+            <Link href="/projects" className="rounded-md px-2 py-1 text-slate-600 hover:bg-slate-100" data-testid="nav-projects">
+              我的项目
+            </Link>
+            <Link href="/stats" className="hidden rounded-md px-2 py-1 text-slate-600 hover:bg-slate-100 sm:inline" data-testid="nav-stats">
+              指标
+            </Link>
+          </>
         )}
         {user === undefined ? (
           <span className="skeleton h-6 w-20 rounded" />

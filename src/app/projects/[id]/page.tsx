@@ -497,7 +497,7 @@ export default function Workspace() {
                 onRendered={viewing ? undefined : onRendered}
               />
             </div>
-            {tab === 'code' && <CodeView files={shownFiles} />}
+            {tab === 'code' && <CodeView files={shownFiles} name={data.project.name} seq={(viewing ?? data.version)?.seq ?? null} />}
             {tab === 'versions' && (
               <VersionsView
                 projectId={id}

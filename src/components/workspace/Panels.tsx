@@ -1,29 +1,53 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api, timeAgo } from '@/lib/client/api';
+import { buildPreviewHtml } from '@/lib/shared/preview';
+import { buildZip } from '@/lib/shared/zip';
 import type { Files, Project, Version, VersionMeta } from '@/lib/shared/types';
 
 const SOURCE_LABEL: Record<string, string> = { agent: '', autofix: '自动修复', restore: '回滚', remix: 'Remix' };
 
-export function CodeView({ files }: { files: Files | null }) {
+/** 下载源码 zip：源文件 + 可直接打开的 index.html（库从本站 /vendor 加载）+ 说明 */
+function downloadZip(files: Files, name: string, seq: number | null) {
+  const origin = window.location.origin;
+  const bundle: Record<string, string> = {};
+  for (const [p, c] of Object.entries(files)) bundle[`src/${p}`] = c;
+  if (!files['index.html']) bundle['index.html'] = buildPreviewHtml(files, { vendorBase: `${origin}/vendor` });
+  bundle['README.md'] = `# ${name}\n\n由 Atoms Lite 生成${seq ? `（版本 ${seq}）` : ''}。\n\n- \`src/\`：源文件（React 18 + Tailwind，浏览器端 Babel 编译，无需构建）\n- \`index.html\`：双击即可在浏览器中打开（React、Babel、Tailwind 从 ${origin}/vendor 加载）\n`;
+  const blob = new Blob([buildZip(bundle) as BlobPart], { type: 'application/zip' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name.replace(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40) || 'app'}${seq ? `-v${seq}` : ''}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+}
+
+export function CodeView({ files, name = 'app', seq = null }: { files: Files | null; name?: string; seq?: number | null }) {
   const paths = Object.keys(files ?? {});
   const [sel, setSel] = useState<string | null>(null);
   const active = sel && paths.includes(sel) ? sel : (paths.find((p) => /app\.jsx$/i.test(p)) ?? paths[0]);
   if (!files || !paths.length) return <p className="p-8 text-center text-sm text-slate-400">还没有代码。</p>;
   return (
     <div className="flex h-full" data-testid="code-view">
-      <ul className="w-44 shrink-0 overflow-y-auto border-r border-slate-200 bg-white py-2 text-sm">
-        {paths.map((p) => (
-          <li key={p}>
-            <button
-              onClick={() => setSel(p)}
-              className={`w-full truncate px-3 py-1 text-left ${p === active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'}`}
-            >
-              {p}
-            </button>
-          </li>
-        ))}
-      </ul>
+      <div className="flex w-44 shrink-0 flex-col border-r border-slate-200 bg-white">
+        <ul className="min-h-0 flex-1 overflow-y-auto py-2 text-sm">
+          {paths.map((p) => (
+            <li key={p}>
+              <button
+                onClick={() => setSel(p)}
+                className={`w-full truncate px-3 py-1 text-left ${p === active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                {p}
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button onClick={() => downloadZip(files, name, seq)} className="m-2 rounded-lg border border-slate-200 py-1.5 text-xs text-slate-600 hover:bg-slate-50" data-testid="download-zip">
+          ⬇ 下载 zip
+        </button>
+      </div>
       <pre className="min-w-0 flex-1 overflow-auto bg-slate-950 p-4 text-xs leading-relaxed text-slate-100">
         <code>{files[active]}</code>
       </pre>

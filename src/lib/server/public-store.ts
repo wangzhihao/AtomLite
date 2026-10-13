@@ -39,3 +39,39 @@ export async function getPublished(by: { slug: string } | { projectId: string })
   if (!v) return null;
   return { projectId: p.id, name: p.name, slug: p.published_slug, versionId: v.id, seq: v.seq, summary: v.summary, files: v.files as Files };
 }
+
+export type PublishedCard = { projectId: string; name: string; slug: string; seq: number; summary: string | null; updatedAt: string; remixedFrom: string | null };
+
+/** Discover 广场：最近更新的公开作品 */
+export async function listPublished(limit = 24): Promise<PublishedCard[]> {
+  if (!useSupabase()) {
+    const versions = new Map(db().versions.map((v) => [v.id, v]));
+    return db()
+      .projects.filter((p) => p.published_slug && p.published_version_id && versions.has(p.published_version_id))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      .slice(0, limit)
+      .map((p) => {
+        const v = versions.get(p.published_version_id!)!;
+        return { projectId: p.id, name: p.name, slug: p.published_slug!, seq: v.seq, summary: v.summary, updatedAt: p.updated_at, remixedFrom: p.remixed_from };
+      });
+  }
+  if (!env.supabaseServiceKey) return [];
+  const { data } = await admin()
+    .from('projects')
+    .select('id, name, published_slug, updated_at, remixed_from, versions!projects_published_version_fk(seq, summary)')
+    .not('published_slug', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  return (data ?? []).map((p) => {
+    const v = (Array.isArray(p.versions) ? p.versions[0] : p.versions) as { seq: number; summary: string | null } | null;
+    return {
+      projectId: p.id as string,
+      name: p.name as string,
+      slug: p.published_slug as string,
+      seq: v?.seq ?? 0,
+      summary: v?.summary ?? null,
+      updatedAt: p.updated_at as string,
+      remixedFrom: (p.remixed_from as string | null) ?? null,
+    };
+  });
+}
