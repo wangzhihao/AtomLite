@@ -105,7 +105,7 @@ export type QATest = { feature: string; steps: QAStep[] };
 export type QAResult = { feature: string; ok: boolean; error?: string };
 
 /** 进度步骤（设计文档第 3 节）：新建 规划 → 设计 → 编码 → 检查 → 保存 → 建议；修改从编码开始；修复从修复开始 */
-export type StepId = 'plan' | 'design' | 'code' | 'fix' | 'check' | 'save' | 'suggest' | 'reply';
+export type StepId = 'route' | 'plan' | 'design' | 'code' | 'fix' | 'check' | 'save' | 'suggest' | 'reply';
 export type ProgressStep = { id: StepId; label: string };
 export type ProgressData = {
   step: StepId | null;

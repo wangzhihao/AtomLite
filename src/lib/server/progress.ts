@@ -13,6 +13,7 @@ const TICK_MS = 2000;
 const DEFAULT_TYPICAL_MS: Record<RunIntent, number> = { create: 60_000, edit: 35_000, fix: 30_000, chat: 8_000 };
 
 const LABELS: Record<StepId, string> = {
+  route: '分派',
   plan: '规划',
   design: '设计',
   code: '编码',

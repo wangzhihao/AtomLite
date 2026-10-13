@@ -277,6 +277,8 @@ export function RunProgress({ live }: { live: LiveRun }) {
   const curIdx = live.steps.findIndex((s) => s.id === live.step);
   const doing = (() => {
     switch (live.step) {
+      case 'route':
+        return live.userAttachments?.length ? `Leo 正在看你的消息和 ${live.userAttachments.length} 个附件` : 'Leo 正在理解你的消息';
       case 'plan':
         return 'Nora 正在梳理需求';
       case 'design':

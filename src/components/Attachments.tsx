@@ -3,15 +3,77 @@ import { useEffect, useRef, useState } from 'react';
 import { ACCEPT, ATTACHMENT_LIMITS, type Attachment } from '@/lib/shared/attachments';
 
 /** 输入框里待发送的附件：上传中 / 已上传 / 失败 */
-export type PendingAttachment = { key: string; name: string; status: 'uploading' | 'done' | 'error'; error?: string; att?: Attachment; preview?: string };
+export type PendingAttachment = {
+  key: string;
+  name: string;
+  status: 'uploading' | 'done' | 'error';
+  /** 上传进度 0–1；compressing 表示正在本地压缩 */
+  progress?: number;
+  compressing?: boolean;
+  error?: string;
+  att?: Attachment;
+  preview?: string;
+};
 
-async function upload(file: File): Promise<Attachment> {
-  const fd = new FormData();
-  fd.append('file', file);
-  const res = await fetch('/api/uploads', { method: 'POST', body: fd });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: { message?: string } }).error?.message ?? `上传失败（${res.status}）`);
-  return (data as { attachment: Attachment }).attachment;
+/** 模型看图时会把长边缩到约 1568 像素，更大的图只会让上传和推理更慢 */
+const MAX_SIDE = 1568;
+
+/**
+ * 上传前在浏览器里压缩大图：长边超过 1568 或文件超过 1 MB 的 PNG / JPEG / WebP 缩到 1568 以内
+ * （PNG 转 WebP 保留透明，其余转 JPEG），压完反而更大就用原图。GIF 可能是动图，不处理。
+ */
+export async function shrinkImage(file: File): Promise<File> {
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return file;
+  let bmp: ImageBitmap;
+  try {
+    bmp = await createImageBitmap(file);
+  } catch {
+    return file;
+  }
+  const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  if (scale === 1 && file.size <= 1024 * 1024) return file;
+  const w = Math.round(bmp.width * scale);
+  const h = Math.round(bmp.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return file;
+  const keepAlpha = file.type === 'image/png';
+  if (!keepAlpha) {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+  }
+  ctx.drawImage(bmp, 0, 0, w, h);
+  bmp.close();
+  const type = keepAlpha ? 'image/webp' : 'image/jpeg';
+  const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, type, 0.88));
+  if (!blob || blob.size >= file.size) return file;
+  const ext = blob.type === 'image/webp' ? 'webp' : blob.type === 'image/png' ? 'png' : 'jpg';
+  return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.' + ext, { type: blob.type });
+}
+
+/** 用 XHR 上传，才能拿到上传进度（fetch 拿不到） */
+function upload(file: File, onProgress: (p: number) => void): Promise<Attachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/uploads');
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    xhr.onload = () => {
+      let data: { attachment?: Attachment; error?: { message?: string } } = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        /* 非 JSON 响应 */
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && data.attachment) resolve(data.attachment);
+      else reject(new Error(data.error?.message ?? `上传失败（${xhr.status}）`));
+    };
+    xhr.onerror = () => reject(new Error('网络中断，上传失败'));
+    const fd = new FormData();
+    fd.append('file', file);
+    xhr.send(fd);
+  });
 }
 
 /**
@@ -34,6 +96,8 @@ export function useAttachments(beforeUpload?: () => Promise<unknown>) {
       key: `${Date.now()}-${n}-${f.name}`,
       name: f.name || '粘贴的图片.png',
       status: 'uploading',
+      progress: 0,
+      compressing: f.type.startsWith('image/'),
       preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined,
     }));
     const overflow: PendingAttachment[] = rejected.map((f, n) => ({
@@ -51,8 +115,11 @@ export function useAttachments(beforeUpload?: () => Promise<unknown>) {
     await Promise.all(
       accepted.map(async (f, n) => {
         const key = added[n].key;
+        const patch = (p: Partial<PendingAttachment>) => setItems((s) => s.map((i) => (i.key === key ? { ...i, ...p } : i)));
         try {
-          const att = await upload(f);
+          const small = await shrinkImage(f);
+          patch({ compressing: false });
+          const att = await upload(small, (p) => patch({ progress: p }));
           setItems((s) => s.map((i) => (i.key === key ? { ...i, status: 'done', att } : i)));
         } catch (e) {
           setItems((s) => s.map((i) => (i.key === key ? { ...i, status: 'error', error: e instanceof Error ? e.message : String(e) } : i)));
@@ -138,7 +205,15 @@ export function AttachmentTray({ items, onRemove }: { items: PendingAttachment[]
           {i.preview ? <img src={i.preview} alt="" className="h-8 w-8 shrink-0 rounded object-cover" /> : <span className="text-base">📄</span>}
           <span className="min-w-0 flex-1">
             <span className="block truncate">{i.name}</span>
-            <span className="block truncate text-[10px] opacity-70">{i.status === 'uploading' ? '上传中…' : i.status === 'error' ? i.error : '已上传'}</span>
+            <span className="block truncate text-[10px] opacity-70" data-testid="attach-chip-status">
+              {i.status === 'uploading'
+                ? i.compressing
+                  ? '压缩中…'
+                  : `上传中 ${Math.round((i.progress ?? 0) * 100)}%`
+                : i.status === 'error'
+                  ? i.error
+                  : `已上传${i.att ? ` · ${i.att.size >= 1024 * 1024 ? `${(i.att.size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(i.att.size / 1024))} KB`}` : ''}`}
+            </span>
           </span>
           <button type="button" onClick={() => onRemove(i.key)} className="shrink-0 text-slate-400 hover:text-slate-700" aria-label={`移除 ${i.name}`}>
             ✕

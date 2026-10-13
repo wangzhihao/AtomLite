@@ -109,21 +109,34 @@ export async function runGeneration(opts: {
   const modelAtts = loadForModel(opts.attachments ?? []);
   const SEES_ATTACHMENTS = new Set<AgentId>(['planner', 'designer', 'engineer']);
 
-  // Leo 分派：先用快速模型判断这条消息是要改应用还是在对话，以及点名了谁（失败时按修改处理）
+  // 先开始 run 和进度，再做分派：分派本身也要几秒，不能让用户对着空白等（设计文档第 3 节）
+  const routing = Boolean(opts.routable && intent !== 'fix');
+  emit({ event: 'run_started', data: { runId: run.id, intent } });
+  const progress = new ProgressTracker(emit);
+  const ROUTE_STEP = { id: 'route' as const, label: '分派' };
+  if (routing) {
+    progress.start([ROUTE_STEP], 3000);
+    progress.step('route');
+    progress.callStarted('leader');
+  }
+
+  // Leo 分派：先用快速模型判断这条消息是要改应用还是在对话，以及点名了谁（失败时按修改处理）。
+  // 只告诉它附件的名字：判断“改还是聊”用不到图片本身，带上图片会让分派慢好几秒
   let chatAgent: AgentId = 'leader';
   let routeUsage: LLMUsage | null = null;
   /** 分派时就发现额度用完：不再继续调用其他角色，直接告诉用户 */
   let quotaErr: unknown = null;
-  if (opts.routable && intent !== 'fix') {
+  if (routing) {
     try {
+      const names = modelAtts.map((a) => a.name);
       const res = await streamLLM({
         role: 'leader',
         tier: 'fast',
         system: ROUTER_SYSTEM,
-        input: `## 用户消息\n\n${opts.instruction}${attachmentNotes(modelAtts, false)}`,
+        input: `## 用户消息\n\n${opts.instruction}${names.length ? `\n\n（用户还附上了：${names.join('、')}）` : ''}`,
         maxTokens: 1000,
-        attachments: modelAtts,
         signal,
+        onText: (t) => progress.output(t.length),
       });
       routeUsage = res.usage;
       const route = extractJson<{ intent?: string; member?: string | null }>(res.text);
@@ -138,18 +151,14 @@ export async function runGeneration(opts: {
       else console.warn('[router]', err);
     }
   }
-  emit({ event: 'run_started', data: { runId: run.id, intent } });
 
-  // 进度：步骤清单 + 通常耗时，之后每 2 秒一次心跳（设计文档第 3 节）
-  const progress = new ProgressTracker(emit);
-  progress.start(
-    planSteps(intent, {
-      planner: Boolean(rolesFor('create', 'plan', opts.team)[0]),
-      designer: Boolean(rolesFor('create', 'design', opts.team)[0]),
-      advisor: Boolean(rolesFor(intent, 'after', opts.team).find((r) => r.id === 'advisor')),
-    }),
-    await typicalDurationMs(store, intent),
-  );
+  // 分派完成后给出完整的步骤清单（分派这一步保留在最前面、标为完成）
+  const steps = planSteps(intent, {
+    planner: Boolean(rolesFor('create', 'plan', opts.team)[0]),
+    designer: Boolean(rolesFor('create', 'design', opts.team)[0]),
+    advisor: Boolean(rolesFor(intent, 'after', opts.team).find((r) => r.id === 'advisor')),
+  });
+  progress.start(routing ? [ROUTE_STEP, ...steps] : steps, await typicalDurationMs(store, intent));
 
   const base: LLMUsage = reused
     ? { inputTokens: run.input_tokens, outputTokens: run.output_tokens, cacheReadTokens: run.cache_read_tokens, costUsd: Number(run.cost_usd ?? 0) }
