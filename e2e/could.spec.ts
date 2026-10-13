@@ -12,10 +12,10 @@ test('Discover 广场与首页精选：发布后出现，可从卡片 Remix', as
   const ctx = await browser.newContext();
   const visitor = await ctx.newPage();
   await visitor.goto('/');
-  await expect(visitor.getByTestId('featured').getByTestId('published-name').first()).toHaveText('广场展示应用');
+  await expect(visitor.getByTestId('featured').getByTestId('published-name').first()).toHaveText('做一个广场展示应用');
   await visitor.getByTestId('nav-discover').click();
   await visitor.waitForURL('**/discover');
-  const card = visitor.getByTestId('published-card').filter({ hasText: '广场展示应用' });
+  const card = visitor.getByTestId('published-card').filter({ hasText: '做一个广场展示应用' });
   await expect(card).toHaveCount(1);
   await card.getByTestId('published-remix').click();
   await visitor.waitForURL(/\/projects\/[0-9a-f-]{36}$/);

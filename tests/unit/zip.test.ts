@@ -10,16 +10,18 @@ test('crc32 matches the reference value', () => {
   assert.equal(crc32(new TextEncoder().encode('123456789')), 0xcbf43926);
 });
 
-test('zip round-trips through the system unzip (including UTF-8 names)', (t) => {
+test('zip round-trips through Python zipfile (CRC check, UTF-8 names)', (t) => {
   try {
-    execFileSync('unzip', ['-v'], { stdio: 'ignore' });
+    execFileSync('python3', ['--version'], { stdio: 'ignore' });
   } catch {
-    t.skip('unzip not available');
+    t.skip('python3 not available');
     return;
   }
   const dir = mkdtempSync(join(tmpdir(), 'zip-'));
   const files = { 'App.jsx': 'const a = "你好";\n', 'data/posts.json': '[1,2,3]', '说明.txt': 'hello' };
   writeFileSync(join(dir, 'a.zip'), buildZip(files));
-  execFileSync('unzip', ['-q', join(dir, 'a.zip'), '-d', join(dir, 'out')]);
-  for (const [p, c] of Object.entries(files)) assert.equal(readFileSync(join(dir, 'out', p), 'utf8'), c);
+  const script = 'import json,sys,zipfile\nz=zipfile.ZipFile(sys.argv[1])\nassert z.testzip() is None\nprint(json.dumps({n: z.read(n).decode("utf-8") for n in z.namelist()}))';
+  const out = JSON.parse(execFileSync('python3', ['-I', '-c', script, join(dir, 'a.zip')], { encoding: 'utf8' }));
+  assert.deepEqual(out, files);
+  assert.ok(readFileSync(join(dir, 'a.zip')).subarray(0, 2).toString() === 'PK');
 });

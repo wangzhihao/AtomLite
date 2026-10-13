@@ -42,9 +42,10 @@ export function Preview({
   reloadKey: number;
   device: 'desktop' | 'mobile';
   overlay?: string | null;
-  onIssue?: (issue: PreviewIssue) => void;
+  /** mountKey：产生事件的 iframe 挂载编号（即当时的 reloadKey），用于区分旧文档的迟到事件 */
+  onIssue?: (issue: PreviewIssue, mountKey: number) => void;
   /** 渲染后 3 秒观察窗口结束（运行检查的时机） */
-  onRendered?: (empty: boolean) => void;
+  onRendered?: (empty: boolean, mountKey: number) => void;
   fullscreen?: boolean;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
@@ -52,6 +53,8 @@ export function Preview({
   onIssueRef.current = onIssue;
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
+  const keyRef = useRef(reloadKey);
+  keyRef.current = reloadKey;
   const [origin, setOrigin] = useState('');
   useEffect(() => setOrigin(window.location.origin), []);
 
@@ -85,14 +88,14 @@ export function Preview({
           writeStorage(projectId, {});
           break;
         case 'runtime_error':
-          onIssueRef.current?.({ kind: 'runtime', message: String(d.message ?? '未知错误') });
+          onIssueRef.current?.({ kind: 'runtime', message: String(d.message ?? '未知错误') }, keyRef.current);
           break;
         case 'console_error':
-          onIssueRef.current?.({ kind: 'console', message: String(d.message ?? '') });
+          onIssueRef.current?.({ kind: 'console', message: String(d.message ?? '') }, keyRef.current);
           break;
         case 'rendered':
-          if (d.empty) onIssueRef.current?.({ kind: 'blank', message: '页面渲染后是空白的（根节点没有内容）' });
-          onRenderedRef.current?.(Boolean(d.empty));
+          if (d.empty) onIssueRef.current?.({ kind: 'blank', message: '页面渲染后是空白的（根节点没有内容）' }, keyRef.current);
+          onRenderedRef.current?.(Boolean(d.empty), keyRef.current);
           break;
       }
     }

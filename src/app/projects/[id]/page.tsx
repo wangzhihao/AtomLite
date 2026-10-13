@@ -24,7 +24,8 @@ type RunBody = {
 };
 
 /** 自愈回路的状态：版本落库后等待运行检查，失败则自动修复（同一 run 最多 2 次，同一错误签名重复即停） */
-type HealState = { runId: string; versionId: string; armed: boolean; issues: PreviewIssue[]; autoFixes: number; signatures: string[] };
+/** mountKey：只认这次挂载的预览 iframe 发来的事件，生成过程中旧文档的迟到事件不算数 */
+type HealState = { runId: string; versionId: string; mountKey: number; armed: boolean; issues: PreviewIssue[]; autoFixes: number; signatures: string[] };
 
 const PREVIEW_DEBOUNCE_MS = 500;
 const VERIFY_TIMEOUT_MS = 9000;
@@ -50,6 +51,8 @@ export default function Workspace() {
   const [tab, setTab] = useState<'preview' | 'code' | 'versions'>('preview');
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [reloadKey, setReloadKey] = useState(0);
+  const reloadKeyRef = useRef(0);
+  reloadKeyRef.current = reloadKey;
   const [issues, setIssues] = useState<PreviewIssue[]>([]);
   const [healing, setHealing] = useState(false);
   const [healLabel, setHealLabel] = useState('');
@@ -259,13 +262,15 @@ export default function Workspace() {
       } finally {
         if (previewTimer.current) clearTimeout(previewTimer.current);
         abortRef.current = null;
-        // 有新版本时进入运行检查：等预览渲染后 3 秒观察窗口结束
+        // 有新版本时进入运行检查：新版本会重新挂载预览 iframe，等它渲染后 3 秒观察窗口结束
+        const mountKey = reloadKeyRef.current + 1;
         if (runId && versionId) {
           // 自动修复轮次沿用同一条自愈链的计数（即使服务端没能复用原 run，也不会无限自动修复）
           const prev = body.auto ? heal.current : null;
           heal.current = {
             runId,
             versionId,
+            mountKey,
             armed: true,
             issues: [],
             autoFixes: prev?.autoFixes ?? 0,
@@ -281,7 +286,7 @@ export default function Workspace() {
         }
         await load();
         // 每个新版本都重新挂载 iframe：内容与上一版相同时（例如修复没改动），srcdoc 不变也要重新运行，才能做运行检查
-        if (versionId) setReloadKey((k) => k + 1);
+        if (versionId) setReloadKey(mountKey);
         setLive(null);
         setRunning(false);
       }
@@ -347,17 +352,20 @@ export default function Workspace() {
     run({ mode: 'fix', errors }, `让 Agent 修复：\n${errors.map((e) => e.message).join('\n')}`);
   }
 
-  const onIssue = useCallback((issue: PreviewIssue) => {
+  const onIssue = useCallback((issue: PreviewIssue, mountKey: number) => {
     if (abortRef.current) return; // 生成过程中的半成品报错不展示
     const h = heal.current;
-    if (h?.armed && !h.issues.some((x) => x.message === issue.message)) h.issues.push(issue);
+    if (h?.armed && h.mountKey === mountKey && !h.issues.some((x) => x.message === issue.message)) h.issues.push(issue);
     setIssues((list) => (list.some((x) => x.message === issue.message) || list.length >= 5 ? list : [...list, issue]));
   }, []);
 
-  const onRendered = useCallback(() => {
-    if (abortRef.current) return;
-    void finishVerify();
-  }, [finishVerify]);
+  const onRendered = useCallback(
+    (_empty: boolean, mountKey: number) => {
+      if (abortRef.current || heal.current?.mountKey !== mountKey) return;
+      void finishVerify();
+    },
+    [finishVerify],
+  );
 
   async function rename(name: string) {
     if (!data || !name.trim() || name === data.project.name) return;
