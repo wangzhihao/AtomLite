@@ -61,7 +61,7 @@ function escapeStyle(s: string) {
   return s.replace(/<\/(style)/gi, '<\\/$1');
 }
 function jsonForScript(v: unknown) {
-  return JSON.stringify(v).replace(/</g, '\\u003c').replace(/ /g, '\\u2028').replace(/ /g, '\\u2029');
+  return JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
 export function bridgeScript(storage: Record<string, string>): string {

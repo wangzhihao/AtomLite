@@ -18,15 +18,24 @@ jobs:
       - name: Vendor files present
         run: ls -la public/vendor && test -s public/vendor/react.js && test -s public/vendor/react-dom.js && test -s public/vendor/babel.js && test -s public/vendor/tailwind.js
       - name: Typecheck
-        run: npx next typegen 2>/dev/null || true; npm run typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npm run typecheck
       - name: Unit tests
+        id: unit
+        continue-on-error: true
         run: npm run test:unit
       - name: Build
         run: npm run build
+        env:
+          ATOMS_SKIP_BUILD_TYPECHECK: '1'
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
       - name: E2E tests
         run: npm run test:e2e
+      - name: Fail if typecheck or unit tests failed
+        if: steps.typecheck.outcome == 'failure' || steps.unit.outcome == 'failure'
+        run: exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
