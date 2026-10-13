@@ -49,6 +49,14 @@ export default function Workspace() {
   const [notice, setNotice] = useState('');
   const [input, setInput] = useState('');
   const [tab, setTab] = useState<'preview' | 'code' | 'versions'>('preview');
+  /** 跟随模式（默认开）：生成时右侧切到代码面板跟随正在写入的文件，版本落库后回到预览 */
+  const [follow, setFollow] = useState(true);
+  const followRef = useRef(true);
+  followRef.current = follow;
+  /** 本轮生成中各文件的实时内容（file_delta 累积，file_done 时替换为完整内容） */
+  const [streaming, setStreaming] = useState<Files>({});
+  const [writingPaths, setWritingPaths] = useState<string[]>([]);
+  const [followPath, setFollowPath] = useState<string | null>(null);
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [reloadKey, setReloadKey] = useState(0);
   const reloadKeyRef = useRef(0);
@@ -176,7 +184,10 @@ export default function Workspace() {
       setNotice('');
       setIssues([]);
       setViewing(null);
-      setTab('preview');
+      setStreaming({});
+      setWritingPaths([]);
+      setFollowPath(null);
+      if (!followRef.current) setTab((t) => (t === 'versions' ? 'preview' : t));
       setLive({ userText, runId: null, intent: null, blocks: [], error: null, usage: null, versionId: null });
       let working: Files = { ...(filesRef.current ?? {}) };
       let started = false;
@@ -215,9 +226,20 @@ export default function Workspace() {
                 patchLast(e.data.agent, (b) => ({ ...b, text: b.text + e.data.text }));
                 break;
               case 'file_started':
+                setStreaming((s) => ({ ...s, [e.data.path]: '' }));
+                setWritingPaths((w) => [...w.filter((p) => p !== e.data.path), e.data.path]);
+                setFollowPath(e.data.path);
+                if (followRef.current) setTab('code');
                 patchLast(e.data.agent, (b) => ({ ...b, files: [...b.files.filter((f) => f.path !== e.data.path), { path: e.data.path, status: 'writing' }] }));
                 break;
+              case 'file_delta': {
+                const { path, text } = e.data;
+                setStreaming((s) => ({ ...s, [path]: ((s[path] ?? '') + text).replace(/^\n/, '') }));
+                break;
+              }
               case 'file_done':
+                setStreaming((s) => ({ ...s, [e.data.path]: e.data.content }));
+                setWritingPaths((w) => w.filter((p) => p !== e.data.path));
                 working = { ...working, [e.data.path]: e.data.content };
                 patchLast(e.data.agent, (b) => ({
                   ...b,
@@ -287,6 +309,10 @@ export default function Workspace() {
         await load();
         // 每个新版本都重新挂载 iframe：内容与上一版相同时（例如修复没改动），srcdoc 不变也要重新运行，才能做运行检查
         if (versionId) setReloadKey(mountKey);
+        setWritingPaths([]);
+        setFollowPath(null);
+        setStreaming({});
+        if (followRef.current) setTab('preview');
         setLive(null);
         setRunning(false);
       }
@@ -307,7 +333,14 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
-  useEffect(() => setTeam(loadTeam()), []);
+  useEffect(() => {
+    setTeam(loadTeam());
+    try {
+      setFollow(localStorage.getItem('atoms:follow') !== '0');
+    } catch {
+      /* 默认开启 */
+    }
+  }, []);
 
   useEffect(() => {
     timelineEnd.current?.scrollIntoView({ block: 'end' });
@@ -519,8 +552,25 @@ export default function Workspace() {
                 {label}
               </button>
             ))}
+            <label className="ml-auto flex cursor-pointer items-center gap-1.5 px-2 text-xs text-slate-500" title="生成时自动切到代码面板，跟随正在写入的文件；完成后回到预览">
+              <input
+                type="checkbox"
+                checked={follow}
+                onChange={(e) => {
+                  setFollow(e.target.checked);
+                  try {
+                    localStorage.setItem('atoms:follow', e.target.checked ? '1' : '0');
+                  } catch {
+                    /* 只在本次会话生效 */
+                  }
+                }}
+                className="accent-brand-600"
+                data-testid="follow-toggle"
+              />
+              跟随生成
+            </label>
             {tab === 'preview' && (
-              <div className="ml-auto flex items-center gap-1">
+              <div className="flex items-center gap-1">
                 <button onClick={() => setReloadKey((k) => k + 1)} className="rounded px-2 py-1 text-slate-500 hover:bg-slate-100" title="刷新" data-testid="refresh">
                   ⟳
                 </button>
@@ -564,7 +614,15 @@ export default function Workspace() {
                 onRendered={viewing ? undefined : onRendered}
               />
             </div>
-            {tab === 'code' && <CodeView files={shownFiles} name={data.project.name} seq={(viewing ?? data.version)?.seq ?? null} />}
+            {tab === 'code' && (
+              <CodeView
+                files={running && !viewing ? { ...(files ?? {}), ...streaming } : shownFiles}
+                name={data.project.name}
+                seq={(viewing ?? data.version)?.seq ?? null}
+                followPath={running && !viewing ? followPath : null}
+                writing={running && !viewing ? writingPaths : []}
+              />
+            )}
             {tab === 'versions' && (
               <VersionsView
                 projectId={id}

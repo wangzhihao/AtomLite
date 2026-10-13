@@ -118,6 +118,7 @@ const QAFAIL_JSX = APP_JSX.replace('if (!t) return;', 'if (t) return;');
 function titleFrom(req: string) {
   const t = req
     .replace(MARKERS, '')
+    .trim()
     .replace(/^(帮我|请|给我)?(做|生成|创建|写)(一个|个)?/, '')
     .trim();
   return (t || '我的应用').slice(0, 24);

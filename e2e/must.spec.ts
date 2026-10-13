@@ -100,7 +100,7 @@ test('[3] 生成中可以停止：不产生新版本，上一版本保持可用'
   await createFromHome(page, '做一个停止测试应用');
   await sendMessage(page, '[slow] 主色改成红色');
   await expect(page.getByTestId('stop')).toBeVisible();
-  await expect(page.getByTestId('preview-overlay')).toBeVisible();
+  await expect(page.getByTestId('code-following')).toBeVisible();
   await page.getByTestId('stop').click();
   await expect(page.getByTestId('system-message').last()).toContainText('已停止生成', { timeout: 15_000 });
   await expect(page.getByTestId('version-badge')).toHaveText('版本 1');
