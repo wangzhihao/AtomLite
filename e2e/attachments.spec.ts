@@ -67,10 +67,11 @@ test('拒绝不支持或过大的文件，每条消息最多 4 个附件', async
   await expect(page.getByTestId('attach-chip').last()).toHaveAttribute('title', /只支持/);
   await page.getByRole('button', { name: '移除 evil.svg' }).click();
 
-  const big = Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]);
-  await attach(page, [{ name: 'huge.png', mimeType: 'image/png', buffer: big }]);
+  // PNG / JPEG 会先在浏览器里压缩；GIF 可能是动图不压缩，用它验证服务端的大小上限
+  const big = Buffer.concat([Buffer.from('GIF89a'), Buffer.alloc(5 * 1024 * 1024)]);
+  await attach(page, [{ name: 'huge.gif', mimeType: 'image/gif', buffer: big }]);
   await expect(page.getByTestId('attach-chip').last()).toHaveAttribute('title', /文件太大/);
-  await page.getByRole('button', { name: '移除 huge.png' }).click();
+  await page.getByRole('button', { name: '移除 huge.gif' }).click();
 
   await attach(page, [png('1.png'), png('2.png'), png('3.png'), png('4.png'), png('5.png')]);
   await expect(page.locator('[data-testid=attach-chip][data-status=done]')).toHaveCount(4);

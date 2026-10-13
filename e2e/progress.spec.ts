@@ -33,11 +33,11 @@ test('新建：步骤条逐步推进，状态行显示在做什么、用时、�
   await expect(page.getByTestId('progress-bar')).toHaveCount(0);
 });
 
-test('修改：步骤只有编码 → 检查 → 保存 → 建议', async ({ page }) => {
+test('修改：步骤是分派 → 编码 → 检查 → 保存 → 建议', async ({ page }) => {
   await createFromHome(page, '做一个修改进度测试');
   await page.getByTestId('follow-toggle').uncheck();
   await sendMessage(page, '[slow] 主色改成绿色');
-  await expect.poll(async () => (await steps(page)).map((s) => s.split(':')[0])).toEqual(['code', 'check', 'save', 'suggest']);
+  await expect.poll(async () => (await steps(page)).map((s) => s.split(':')[0])).toEqual(['route', 'code', 'check', 'save', 'suggest']);
   await waitVersion(page, 2);
 });
 
