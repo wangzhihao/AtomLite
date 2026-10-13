@@ -5,8 +5,8 @@ import type { Message, Project, Run, Version } from '@/lib/shared/types';
 import { env } from './env';
 
 /**
- * 本地开发 / 测试用的文件数据库：整个库在内存里，每次写操作后原子落盘。
- * 线上环境请配置 Supabase。
+ * 本机数据存储（设计文档第 4、7 节）：整个库常驻内存，每次写操作后先写临时文件再原子替换。
+ * 演示规模足够；数据量增长后按同一结构迁到 SQLite（只需替换 store.ts 的实现）。
  */
 export type LocalUser = {
   id: string;

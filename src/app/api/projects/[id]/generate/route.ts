@@ -8,7 +8,6 @@ import { LIMITS } from '@/lib/shared/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
 
 /**
  * SSE 生成接口（设计文档第 8 节）。body：
