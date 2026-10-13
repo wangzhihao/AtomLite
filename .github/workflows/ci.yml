@@ -29,6 +29,18 @@ jobs:
         run: npm run build
         env:
           ATOMS_SKIP_BUILD_TYPECHECK: '1'
+      - name: Package standalone build
+        run: |
+          cp -r public .next/standalone/public
+          mkdir -p .next/standalone/.next && cp -r .next/static .next/standalone/.next/static
+          rm -rf .next/standalone/.data .next/standalone/.data-e2e
+          tar -czf atomlite-standalone.tgz -C .next/standalone .
+          ls -lh atomlite-standalone.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atomlite-standalone
+          path: atomlite-standalone.tgz
+          retention-days: 14
       - name: Install Playwright
         run: npx playwright install --with-deps chromium
       - name: E2E tests
