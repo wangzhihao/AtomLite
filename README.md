@@ -1,6 +1,6 @@
 # AtomLite
 
-This repo implements the design described in the [AtomLite design doc](https://claude.ai/artifact/3P5Q53KdYVJgWu9Qq3cDSQ).
+This repo implements the design described in the [AtomLite design doc](https://claude.ai/artifact/3P5Q53KdYVJgWu9Qq3cDSQ#0ed7ef0a-5fed) (public).
 
 Atoms Lite（迷你 Atoms）：用一句话需求驱动 AI Agent 生成 Web 应用，实时预览，多轮迭代。
 
