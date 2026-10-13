@@ -84,18 +84,12 @@ test('团队配置面板：关掉 Nora / Mia / Sage 后新建只有 Kai，设置
 });
 
 test('验收 QA：Quinn 按功能点做交互测试，在独立沙箱里执行，不影响用户数据', async ({ page }) => {
+  await enableQA(page);
   await page.goto('/');
   await page.getByTestId('home-prompt').fill('做一个验收测试');
   await page.getByTestId('home-submit').click();
   await page.waitForURL(/\/projects\/[0-9a-f-]{36}$/);
-  await page.getByTestId('team').click();
-  await page.getByTestId('toggle-qa').click();
-  await page.getByTestId('team').click();
   await waitVersion(page, 1);
-  // 第一个版本生成时 QA 还没打开，用一轮修改触发验收
-  await page.getByTestId('chat-input').fill('加一个按月筛选');
-  await page.getByTestId('send').click();
-  await waitVersion(page, 2);
   const quinn = page.getByTestId('msg-qa');
   await expect(quinn).toHaveCount(1, { timeout: 20_000 });
   await expect(quinn).toContainText('3 个功能点测了 3 个，全部通过');
@@ -103,14 +97,19 @@ test('验收 QA：Quinn 按功能点做交互测试，在独立沙箱里执行�
   // 验收在独立 iframe 中执行：用户预览里没有测试数据
   await expect(frame(page).getByTestId('items')).toContainText('还没有内容');
   await expect(frame(page).getByTestId('items')).not.toContainText('QA 测试条目');
+  await page.getByTestId('team').click();
+  await expect(page.getByTestId('toggle-qa')).toHaveAttribute('aria-checked', 'true');
 });
 
-test('验收 QA 发现功能缺陷 → Max 自动修复 → 再次验收通过', async ({ page }) => {
-  await page.goto('/projects');
+async function enableQA(page: import('@playwright/test').Page) {
   await page.goto('/login');
   await page.getByTestId('guest').click();
   await page.waitForURL('**/projects');
   await page.evaluate(() => localStorage.setItem('atoms:team', JSON.stringify({ qa: true })));
+}
+
+test('验收 QA 发现功能缺陷 → Max 自动修复 → 再次验收通过', async ({ page }) => {
+  await enableQA(page);
   await page.goto('/');
   await page.getByTestId('home-prompt').fill('[qafail] 做一个有缺陷的应用');
   await page.getByTestId('home-submit').click();
