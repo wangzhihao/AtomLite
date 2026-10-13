@@ -14,8 +14,9 @@ test('多 Agent 流水线：Leo 播报 → Nora 规划卡片 → Mia 设计规�
   await expect(page.getByTestId('msg-engineer')).toContainText('记账本');
   await expect(page.getByTestId('msg-advisor').getByTestId('suggestion-chip')).toHaveCount(3);
   await expect(page.getByTestId('leader-message').first()).toContainText('Nora 先梳理需求');
-  // Mia 的设计规范生效：页面背景来自 design.json 的 CSS 变量
+  // Mia 的设计规范生效（主色来自 design.json 的 CSS 变量），且不会破坏 Tailwind 的间距体系（px-3 = 12px）
   await expect(frame(page).getByTestId('app-title')).toHaveCSS('color', rgb.indigo);
+  await expect(frame(page).getByTestId('item-input')).toHaveCSS('padding-left', '12px');
   await shot(page, '10-pipeline');
 
   await page.reload();

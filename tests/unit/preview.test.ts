@@ -40,6 +40,18 @@ test('designToCssVars ignores arrays and sanitises values', () => {
   assert.equal(designToCssVars({ a: [1], b: 'red;}' }), ':root { --b: red; }');
 });
 
+test('designToCssVars never overrides Tailwind theme variables', () => {
+  const css = designToCssVars({ spacing: '适中', color: { red: '#f00' }, colors: { primary: '#000' }, radius: '12px', font: { heading: 'serif', sans: 'x' } });
+  assert.ok(!/--spacing:/.test(css));
+  assert.ok(css.includes('--design-spacing: 适中;'));
+  assert.ok(css.includes('--design-color-red: #f00;'));
+  assert.ok(css.includes('--design-font-sans: x;'));
+  // 约定的变量名保持不变
+  assert.ok(css.includes('--colors-primary: #000;'));
+  assert.ok(css.includes('--radius: 12px;'));
+  assert.ok(css.includes('--font-heading: serif;'));
+});
+
 test('sse round trip with heartbeat and arbitrary chunking', () => {
   const wire = ': ping\n\n' + encodeSSE('file_done', { path: 'App.jsx', bytes: 3 }) + encodeSSE('run_finished', { status: 'succeeded' });
   const p = new SSEParser();

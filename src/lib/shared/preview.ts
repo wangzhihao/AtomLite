@@ -38,15 +38,26 @@ export function scriptOrder(files: Files): string[] {
   return [...rest, ...app];
 }
 
+/**
+ * Tailwind v4 用这些主题变量计算工具类（例如 p-4 = calc(var(--spacing) * 4)）。
+ * design.json 里的同名键（如 "spacing": "适中"）会把整套间距弄坏，所以加上 design- 前缀避开。
+ */
+const TAILWIND_RESERVED = /^(spacing|color-|text-|font-(sans|serif|mono|weight)|radius-|shadow-|inset-shadow-|drop-shadow-|blur-|breakpoint-|container-|leading-|tracking-|ease-|animate-|perspective-|aspect-|default-|tw-)/;
+
+export function cssVarName(path: string[]) {
+  const name = path.map((p) => p.replace(/[^a-zA-Z0-9-]/g, '-')).join('-');
+  return TAILWIND_RESERVED.test(name) || name === 'spacing' ? `design-${name}` : name;
+}
+
 export function designToCssVars(design: unknown): string {
   const vars: string[] = [];
   const walk = (v: unknown, path: string[]) => {
     if (v && typeof v === 'object' && !Array.isArray(v)) {
       for (const [k, child] of Object.entries(v as Record<string, unknown>)) walk(child, [...path, k]);
     } else if (typeof v === 'string' || typeof v === 'number') {
-      const name = path.map((p) => p.replace(/[^a-zA-Z0-9-]/g, '-')).join('-');
+      const name = cssVarName(path);
       const value = String(v).replace(/[;{}<>]/g, '');
-      if (name) vars.push(`--${name}: ${value};`);
+      if (path.length) vars.push(`--${name}: ${value};`);
     }
   };
   walk(design, []);
