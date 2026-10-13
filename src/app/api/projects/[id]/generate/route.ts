@@ -2,6 +2,8 @@ import { getUser } from '@/lib/server/auth';
 import { fail, handleError, readJson } from '@/lib/server/http';
 import { activeRuns, runGeneration } from '@/lib/server/orchestrator';
 import { getStore } from '@/lib/server/store';
+import { ownedAttachments } from '@/lib/server/uploads';
+import type { Attachment } from '@/lib/shared/attachments';
 import { encodeSSE } from '@/lib/shared/sse';
 import type { AgentEvent, CheckError, ErrorKind } from '@/lib/shared/types';
 import { LIMITS } from '@/lib/shared/types';
@@ -37,7 +39,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       clarified: boolean;
       resume: boolean;
       team: Record<string, unknown>;
+      attachments: string[];
     }>(req);
+    let attachments = ownedAttachments(user, body.attachments);
     const team = Object.fromEntries(
       (['planner', 'designer', 'advisor', 'qa'] as const).filter((k) => typeof body.team?.[k] === 'boolean').map((k) => [k, body.team![k] as boolean]),
     );
@@ -59,8 +63,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       if (!last || last.role !== 'user' || !last.meta?.pending) return fail('没有待处理的需求', 409, 'nothing_pending');
       instruction = last.content;
       pendingId = last.id;
+      attachments = ((last.meta?.attachments as Attachment[] | undefined) ?? []).filter((a) => ownedAttachments(user, [a.id]).length);
     }
     if (mode === 'fix') instruction = [instruction, ...errors.map((e) => `- ${e.message}`)].filter(Boolean).join('\n');
+    if (!instruction && attachments.length) instruction = '请看我上传的附件。';
     if (!instruction) return fail('请输入需求');
     if (instruction.length > LIMITS.messageChars) return fail(`单条消息不能超过 ${LIMITS.messageChars} 字`);
 
@@ -78,14 +84,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       );
     }
 
-    if (pendingId) await store.updateMessage(pendingId, { meta: { pending: false } });
+    if (pendingId) await store.updateMessage(pendingId, { meta: { pending: false, ...(attachments.length ? { attachments } : {}) } });
     else if (!auto)
       await store.addMessage({
         project_id: id,
         role: 'user',
         agent: null,
         content: mode === 'fix' ? `让 Agent 修复：\n${instruction}` : instruction,
-        meta: mode === 'fix' ? { mode } : body.clarified ? { clarified: true } : null,
+        meta:
+          mode === 'fix'
+            ? { mode }
+            : { ...(body.clarified ? { clarified: true } : {}), ...(attachments.length ? { attachments } : {}) },
         version_id: null,
       });
     else
@@ -122,6 +131,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             parentRunId: mode === 'fix' && typeof body.runId === 'string' ? body.runId : null,
             clarified: body.clarified === true,
             routable: !pendingId && mode !== 'fix' && body.clarified !== true,
+            attachments: mode === 'fix' ? [] : attachments,
             team,
             signal: ctrl.signal,
             emit: (e: AgentEvent) => write(encodeSSE(e.event, e.data)),

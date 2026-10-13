@@ -16,7 +16,19 @@ export type LocalUser = {
   created_at: string;
 };
 
+/** 附件元数据；文件本体在 <数据目录>/uploads/<id> */
+export type LocalUpload = {
+  id: string;
+  owner_id: string;
+  name: string;
+  type: string;
+  kind: 'image' | 'pdf' | 'text';
+  size: number;
+  created_at: string;
+};
+
 export type LocalData = {
+  uploads: LocalUpload[];
   users: LocalUser[];
   projects: Project[];
   versions: Version[];
@@ -32,7 +44,7 @@ function file() {
 
 export function db(): LocalData {
   if (!g.__atomsDb) {
-    const empty: LocalData = { users: [], projects: [], versions: [], messages: [], runs: [] };
+    const empty: LocalData = { uploads: [], users: [], projects: [], versions: [], messages: [], runs: [] };
     try {
       g.__atomsDb = existsSync(file()) ? { ...empty, ...JSON.parse(readFileSync(file(), 'utf8')) } : empty;
     } catch {

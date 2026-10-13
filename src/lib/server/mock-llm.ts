@@ -1,6 +1,7 @@
 import 'server-only';
 import { env } from './env';
 import type { LLMCall, LLMResult } from './llm';
+import type { ModelAttachment } from './uploads';
 
 /**
  * 确定性的 Mock LLM：未配置 ANTHROPIC_API_KEY 时使用，便于离线演示和端到端测试。
@@ -65,6 +66,7 @@ function App() {
           {META.title}
         </h1>
         <p className="mt-2 text-slate-500">{META.subtitle}</p>
+        {META.image && <img data-testid="app-image" src={META.image} alt="" className="mt-4 h-24 w-24 rounded-full object-cover" />}
         <form onSubmit={add} className="mt-6 flex gap-2">
           <input
             data-testid="item-input"
@@ -182,7 +184,9 @@ function designer() {
   );
 }
 
-function engineer(input: string) {
+function engineer(input: string, atts: ModelAttachment[] = []) {
+  const firstImage = atts.find((a) => a.kind === 'image');
+  const seen = atts.length ? `我看到了你上传的附件：${atts.map((a) => a.name).join('、')}。` : '';
   const editing = input.includes('## 本轮修改要求');
   const instruction = section(input, editing ? '本轮修改要求' : '用户需求');
   const out: string[] = [];
@@ -202,12 +206,12 @@ function engineer(input: string) {
           ? QAFAIL_JSX
           : APP_JSX;
     if (instruction.includes('[stubborn]')) jsx = `// [stubborn]\n${jsx}`;
-    out.push(`收到。我来做「${title}」：一个可以添加和勾选条目的清单应用，数据保存在本地。\n`);
+    out.push(`${seen}收到。我来做「${title}」：一个可以添加和勾选条目的清单应用，数据保存在本地。\n`);
     out.push(`<summary>新建应用「${title}」，支持添加、勾选条目，数据本地保存</summary>\n`);
     if (!input.includes('<file path="design.json">')) {
       out.push(`<file path="design.json">\n${JSON.stringify({ colors: { primary: '#4f46e5' } })}\n</file>\n`);
     }
-    out.push(`<file path="app.json">\n${JSON.stringify({ title, subtitle: `根据需求生成：${instruction.replace(MARKERS, '').slice(0, 60)}` }, null, 2)}\n</file>\n`);
+    out.push(`<file path="app.json">\n${JSON.stringify({ title, subtitle: `根据需求生成：${instruction.replace(MARKERS, '').slice(0, 60)}`, ...(firstImage ? { image: firstImage.url } : {}) }, null, 2)}\n</file>\n`);
     out.push(`<file path="App.jsx">\n${jsx}\n</file>\n`);
     return out.join('');
   }
@@ -223,7 +227,16 @@ function engineer(input: string) {
   changes.push(clean.slice(0, 80));
   const color = COLORS.find(([re]) => re.test(clean));
   const what = color ? `把主色改成${color[2]}，并记录这次修改` : '记录这次修改';
-  out.push(`好的，我来${what}。\n`);
+  out.push(`${seen}好的，我来${what}。\n`);
+  if (firstImage) {
+    let app: Record<string, unknown> = {};
+    try {
+      app = JSON.parse(extractFile(input, 'app.json') ?? '{}');
+    } catch {
+      /* 用空对象 */
+    }
+    out.push(`<file path="app.json">\n${JSON.stringify({ ...app, image: firstImage.url }, null, 2)}\n</file>\n`);
+  }
   out.push(`<summary>${color ? `主色改为${color[2]}；` : ''}新增修改记录：${clean.slice(0, 40)}</summary>\n`);
   if (color) {
     let design: Record<string, unknown> = {};
@@ -292,9 +305,10 @@ function router(input: string) {
   return JSON.stringify({ intent: chatty && !change ? 'chat' : 'change', member });
 }
 
-function chatReply(input: string) {
-  const msg = /用户：([\s\S]*)$/.exec(input)?.[1]?.trim() ?? '';
-  return `我在，可以直接对话。你刚才说“${msg.slice(0, 30)}”。想改应用的话，直接描述要改的地方就行，比如“主色改成绿色”。`;
+function chatReply(input: string, atts: ModelAttachment[] = []) {
+  const msg = (/用户：([\s\S]*?)(\n\n## 用户本轮上传的附件|$)/.exec(input)?.[1] ?? '').trim();
+  const seen = atts.length ? `我看到了你发的 ${atts.map((a) => a.name).join('、')}。` : '';
+  return `${seen}我在，可以直接对话。你刚才说“${msg.slice(0, 30)}”。想改应用的话，直接描述要改的地方就行，比如“主色改成绿色”。`;
 }
 
 function advisor() {
@@ -332,7 +346,7 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
   const text = isRouter
     ? router(call.input)
     : isChat
-      ? chatReply(call.input)
+      ? chatReply(call.input, call.attachments)
       : call.role === 'planner'
       ? planner(call.input)
       : call.role === 'designer'
@@ -343,7 +357,7 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
             ? advisor()
             : call.role === 'qa'
               ? qaTests()
-              : engineer(call.input);
+              : engineer(call.input, call.attachments);
   const req = section(call.input, '本轮修改要求') + section(call.input, '用户需求');
   const slow = call.role === 'engineer' && /\[slow\]/.test(req);
   const delay = slow ? 250 : env.mockDelayMs;

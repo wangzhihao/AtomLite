@@ -22,7 +22,9 @@ import { checkFiles, errorSignature } from './check';
 import { planSteps, ProgressTracker, typicalDurationMs } from './progress';
 import { env } from './env';
 import { addUsage, emptyUsage, extractJson, isQuotaError, modelFor, streamLLM, type LLMUsage } from './llm';
-import { buildChatInput, chatSystem, ROUTER_SYSTEM } from './prompts';
+import { attachmentNotes, buildChatInput, chatSystem, ROUTER_SYSTEM } from './prompts';
+import { loadForModel } from './uploads';
+import type { Attachment } from '@/lib/shared/attachments';
 import type { Store } from './store';
 
 /**
@@ -77,6 +79,8 @@ export async function runGeneration(opts: {
   clarified: boolean;
   /** 可以走对话路径：普通的用户消息（非首页需求、非澄清回答、非修复） */
   routable?: boolean;
+  /** 用户本轮上传的附件（已校验归属） */
+  attachments?: Attachment[];
   team?: Partial<TeamConfig>;
   signal: AbortSignal;
   emit: Emit;
@@ -101,6 +105,10 @@ export async function runGeneration(opts: {
     run = await store.createRun({ project_id: project.id, intent, model: modelFor('strong') });
   }
 
+  // 附件内容：发给分派、规划、设计、编码和对话；修复、建议、验收不需要
+  const modelAtts = loadForModel(opts.attachments ?? []);
+  const SEES_ATTACHMENTS = new Set<AgentId>(['planner', 'designer', 'engineer']);
+
   // Leo 分派：先用快速模型判断这条消息是要改应用还是在对话，以及点名了谁（失败时按修改处理）
   let chatAgent: AgentId = 'leader';
   let routeUsage: LLMUsage | null = null;
@@ -112,8 +120,9 @@ export async function runGeneration(opts: {
         role: 'leader',
         tier: 'fast',
         system: ROUTER_SYSTEM,
-        input: `## 用户消息\n\n${opts.instruction}`,
+        input: `## 用户消息\n\n${opts.instruction}${attachmentNotes(modelAtts, false)}`,
         maxTokens: 1000,
+        attachments: modelAtts,
         signal,
       });
       routeUsage = res.usage;
@@ -179,6 +188,8 @@ export async function runGeneration(opts: {
 
   async function call(r: AgentRole, onText?: (t: string) => void) {
     const p = r.buildPrompt(ctx);
+    const withAtts = SEES_ATTACHMENTS.has(r.id) && modelAtts.length > 0;
+    if (withAtts) p.input += attachmentNotes(modelAtts, r.id === 'engineer');
     progress.callStarted(r.id);
     lastThinking = '';
     const res = await streamLLM({
@@ -188,6 +199,7 @@ export async function runGeneration(opts: {
       input: p.input,
       maxTokens: p.maxTokens,
       taskBudget: p.taskBudget,
+      attachments: withAtts ? modelAtts : undefined,
       signal,
       onText: (t) => {
         progress.output(t.length);
@@ -338,8 +350,9 @@ export async function runGeneration(opts: {
         role: chatAgent,
         tier: 'fast',
         system: chatSystem(chatAgent),
-        input: buildChatInput({ message: opts.instruction, spec: ctx.spec, files, history }),
+        input: buildChatInput({ message: opts.instruction, spec: ctx.spec, files, history }) + attachmentNotes(modelAtts, false),
         maxTokens: 2000,
+        attachments: modelAtts,
         signal,
         onText: (t) => {
           reply += t;

@@ -13,7 +13,8 @@ Atoms Lite（迷你 Atoms）：用一句话需求驱动 AI Agent 团队生成 We
 | Must：账号（邮箱 + 游客）、项目管理、对话驱动生成 + 流式输出、沙箱预览（桌面 / 手机）、持久化、多轮迭代 | 全部完成 | `e2e/must.spec.ts` |
 | Should：多 Agent 流水线、运行时错误自愈、版本回滚、质量与成本度量、角色注册表 + 设计师、建议者、需求澄清、一键发布 | 全部完成 | `e2e/should.spec.ts` |
 | Could：验收 QA Agent、团队配置面板、代码查看与 zip 下载、Discover 广场 + Remix | 完成 | `e2e/could.spec.ts` |
-| Could：用户上传图片（存到服务器磁盘）、App Cloud | 未开始 | — |
+| Could：附件（图片 / PDF / 文本给团队看，图片可直接用进应用） | 完成 | `e2e/attachments.spec.ts` |
+| Could：App Cloud | 未开始 | — |
 
 尚未完成的交付项（设计文档第 11 节）：Caddy + 自定义域名启用 HTTPS 并在国内网络实测、个人博客用例验收、20 条评测需求、预置演示项目、数据目录每日备份与磁盘告警。
 
@@ -88,6 +89,7 @@ src/
     auth.ts                   游客与邮箱登录：HMAC 签名的 httpOnly Cookie、scrypt 密码哈希
     store.ts / local-db.ts    数据访问层（每次读写检查归属）与本机数据存储
     public-store.ts           发布页、Remix、广场的只读访问
+    uploads.ts                附件存储（按内容识别类型、归属校验、发给模型的内容）
 deploy/                       systemd 服务与部署脚本
 scripts/                      vendor 复制、内存受限运行、本机完整检查
 ```

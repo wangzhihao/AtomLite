@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { AttachButton, AttachmentTray, useAttachments } from '@/components/Attachments';
 import { PublishedGrid, type PublishedCard } from '@/components/PublishedGrid';
 import { api, ensureUser, notifyAuthChanged } from '@/lib/client/api';
 import type { Project } from '@/lib/shared/types';
@@ -21,6 +22,11 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [featured, setFeatured] = useState<PublishedCard[]>([]);
+  // 首页还没登录时，上传附件前先以游客身份登录
+  const attach = useAttachments(async () => {
+    await ensureUser();
+    notifyAuthChanged();
+  });
 
   useEffect(() => {
     api<{ items: PublishedCard[] }>('/api/discover?limit=6').then((d) => setFeatured(d.items), () => undefined);
@@ -28,13 +34,16 @@ export default function Home() {
 
   async function start(text: string) {
     const p = text.trim();
-    if (!p || busy) return;
+    if ((!p && !attach.ready.length) || busy || attach.uploading) return;
     setBusy(true);
     setError('');
     try {
       await ensureUser();
       notifyAuthChanged();
-      const { project } = await api<{ project: Project }>('/api/projects', { method: 'POST', json: { prompt: p } });
+      const { project } = await api<{ project: Project }>('/api/projects', {
+        method: 'POST',
+        json: { prompt: p, attachments: attach.ready.map((a) => a.id) },
+      });
       router.push(`/projects/${project.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -50,13 +59,16 @@ export default function Home() {
 
       <form
         className="mt-10 w-full rounded-2xl border border-slate-200 bg-white p-3 shadow-sm focus-within:border-brand-500"
+        {...attach.dropProps}
         onSubmit={(e) => {
           e.preventDefault();
           start(prompt);
         }}
       >
+        <AttachmentTray items={attach.items} onRemove={attach.remove} />
         <textarea
           data-testid="home-prompt"
+          onPaste={attach.onPaste}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
@@ -71,10 +83,13 @@ export default function Home() {
           className="w-full resize-none bg-transparent px-2 py-1 text-base outline-none placeholder:text-slate-400"
         />
         <div className="flex items-center justify-between">
-          <span className="px-2 text-xs text-slate-400">Enter 发送 · Shift+Enter 换行 · 无需注册</span>
+          <span className="flex items-center gap-1 px-1 text-xs text-slate-400">
+            <AttachButton onFiles={(f) => void attach.add(f)} disabled={busy} />
+            Enter 发送 · Shift+Enter 换行 · 可附图片 / PDF · 无需注册
+          </span>
           <button
             data-testid="home-submit"
-            disabled={!prompt.trim() || busy}
+            disabled={(!prompt.trim() && !attach.ready.length) || busy || attach.uploading}
             className="rounded-xl bg-brand-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? '正在创建…' : '生成应用'}
