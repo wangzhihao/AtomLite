@@ -21,6 +21,7 @@ import { role, rolesFor, type AgentRole, type RunContext } from './agents';
 import { checkFiles, errorSignature } from './check';
 import { planSteps, ProgressTracker, typicalDurationMs } from './progress';
 import { addUsage, emptyUsage, extractJson, modelFor, streamLLM, type LLMUsage } from './llm';
+import { buildChatInput, chatSystem, ROUTER_SYSTEM } from './prompts';
 import type { Store } from './store';
 
 /**
@@ -35,6 +36,19 @@ export type Emit = (e: AgentEvent) => void;
 /** 进行中的 run，用于 /cancel 接口（单实例内有效；客户端断开也会触发取消） */
 const g = globalThis as unknown as { __atomsRuns?: Map<string, AbortController> };
 export const activeRuns = (g.__atomsRuns ??= new Map());
+
+/** Engineer / Fixer 只给了文字回复、没有文件 */
+class ReplyOnly extends Error {}
+
+const MEMBER_AGENT: Record<string, AgentId> = {
+  leo: 'leader',
+  nora: 'planner',
+  mia: 'designer',
+  kai: 'engineer',
+  max: 'fixer',
+  sage: 'advisor',
+  quinn: 'qa',
+};
 
 class RunError extends Error {
   constructor(
@@ -60,6 +74,8 @@ export async function runGeneration(opts: {
   errors: CheckError[];
   parentRunId: string | null;
   clarified: boolean;
+  /** 可以走对话路径：普通的用户消息（非首页需求、非澄清回答、非修复） */
+  routable?: boolean;
   team?: Partial<TeamConfig>;
   signal: AbortSignal;
   emit: Emit;
@@ -83,6 +99,32 @@ export async function runGeneration(opts: {
     intent = current ? 'edit' : 'create';
     run = await store.createRun({ project_id: project.id, intent, model: modelFor('strong') });
   }
+
+  // Leo 分派：先用快速模型判断这条消息是要改应用还是在对话，以及点名了谁（失败时按修改处理）
+  let chatAgent: AgentId = 'leader';
+  let routeUsage: LLMUsage | null = null;
+  if (opts.routable && intent !== 'fix') {
+    try {
+      const res = await streamLLM({
+        role: 'leader',
+        tier: 'fast',
+        system: ROUTER_SYSTEM,
+        input: `## 用户消息\n\n${opts.instruction}`,
+        maxTokens: 1000,
+        signal,
+      });
+      routeUsage = res.usage;
+      const route = extractJson<{ intent?: string; member?: string | null }>(res.text);
+      if (route?.intent === 'chat') {
+        intent = 'chat';
+        chatAgent = MEMBER_AGENT[String(route.member ?? '').toLowerCase()] ?? 'leader';
+        await store.updateRun(run.id, { intent, model: modelFor('fast') });
+      }
+    } catch (err) {
+      if (signal.aborted) throw err;
+      console.warn('[router]', err);
+    }
+  }
   emit({ event: 'run_started', data: { runId: run.id, intent } });
 
   // 进度：步骤清单 + 通常耗时，之后每 2 秒一次心跳（设计文档第 3 节）
@@ -99,7 +141,7 @@ export async function runGeneration(opts: {
   const base: LLMUsage = reused
     ? { inputTokens: run.input_tokens, outputTokens: run.output_tokens, cacheReadTokens: run.cache_read_tokens, costUsd: Number(run.cost_usd ?? 0) }
     : emptyUsage();
-  let usage = emptyUsage();
+  let usage = routeUsage ?? emptyUsage();
   let fixRounds = reused ? run.fix_rounds : 0;
   const errorKinds = new Set<string>(run.error_kinds ?? []);
   const pending: PendingMessage[] = [];
@@ -141,6 +183,7 @@ export async function runGeneration(opts: {
       system: p.system,
       input: p.input,
       maxTokens: p.maxTokens,
+      taskBudget: p.taskBudget,
       signal,
       onText: (t) => {
         progress.output(t.length);
@@ -157,7 +200,7 @@ export async function runGeneration(opts: {
     if (t.inputTokens + t.cacheReadTokens + t.outputTokens > LIMITS.runTokenBudget) {
       throw new RunError('budget', `本轮生成超出 token 预算（${LIMITS.runTokenBudget / 1000}K），已停止。可以把需求拆小一点再试`);
     }
-    return res.text;
+    return res;
   }
 
   /** 运行输出文件的角色（Engineer / Fixer），返回本轮摘要 */
@@ -210,15 +253,37 @@ export async function runGeneration(opts: {
       }
     };
     ctx.files = files;
-    await call(r, (t) => parser.push(t).forEach(onTag));
+    const res = await call(r, (t) => parser.push(t).forEach(onTag));
     const fin = parser.finish();
     fin.events.forEach(onTag);
     if (signal.aborted) throw signal.reason ?? new Error('aborted');
+    const who = id === 'fixer' ? 'Max' : 'Kai';
     if (!Object.keys(changed).length && !deleted.length) {
+      // 如实告诉用户发生了什么：被长度上限截断 / 用文字回答了 / 真的什么都没给
+      if (res.stopReason === 'max_tokens') {
+        throw new RunError(
+          'truncated',
+          `${who} 的输出超出了单次长度上限（${LIMITS.maxOutputTokens / 1000}K tokens，思考也计入其中），在写完文件之前被截断，本轮没有保存任何改动。可以把需求拆成几步分别提出，或者先做一个简化版本。`,
+        );
+      }
+      if (narrative.trim()) {
+        pending.push({
+          role: 'agent',
+          agent: id,
+          content: narrative.trim(),
+          meta: { replyOnly: true, ...(lastThinking ? { thinking: lastThinking.trim().slice(0, 4000) } : {}) },
+          version_id: null,
+        });
+        throw new ReplyOnly();
+      }
       throw new RunError(
         'empty_output',
-        fin.unclosedFile ? '生成被截断，没有得到完整的文件，请重试' : `${id === 'fixer' ? 'Max' : 'Kai'} 没有输出任何文件，请换个说法再试`,
+        fin.unclosedFile ? `${who} 写到 ${fin.unclosedFile} 时输出中断，没有得到完整的文件，请重试` : `${who} 没有给出任何内容，请换个说法再试`,
       );
+    }
+    if (res.stopReason === 'max_tokens' && fin.unclosedFile) {
+      // 有完整的文件，但最后一个被截断：照常检查已完成的部分，并在消息里说明
+      emit({ event: 'message_delta', data: { agent: id, text: `\n（输出达到长度上限，${fin.unclosedFile} 没有写完，已丢弃）` } });
     }
     files = { ...files, ...changed };
     for (const p of deleted) delete files[p];
@@ -258,6 +323,32 @@ export async function runGeneration(opts: {
 
   try {
     let summary = '';
+    if (intent === 'chat') {
+      // 对话：被点名的成员（默认 Leo）直接回答，不改应用、不生成版本
+      progress.step('reply');
+      progress.callStarted(chatAgent);
+      emit({ event: 'agent_started', data: { agent: chatAgent } });
+      let reply = '';
+      const res = await streamLLM({
+        role: chatAgent,
+        tier: 'fast',
+        system: chatSystem(chatAgent),
+        input: buildChatInput({ message: opts.instruction, spec: ctx.spec, files, history }),
+        maxTokens: 2000,
+        signal,
+        onText: (t) => {
+          reply += t;
+          progress.output(t.length);
+          emit({ event: 'message_delta', data: { agent: chatAgent, text: t } });
+        },
+      });
+      usage = addUsage(usage, res.usage);
+      if (signal.aborted) throw signal.reason ?? new Error('aborted');
+      pending.push({ role: 'agent', agent: chatAgent, content: reply.trim() || '（没有回复）', meta: { chat: true, usage: usageOut() }, version_id: null });
+      await finish('replied');
+      await persist();
+      return;
+    }
     if (intent === 'create') {
       const planner = rolesFor('create', 'plan', opts.team)[0];
       const designer = rolesFor('create', 'design', opts.team)[0];
@@ -267,7 +358,7 @@ export async function runGeneration(opts: {
       if (planner) {
         progress.step('plan');
         emit({ event: 'agent_started', data: { agent: 'planner' } });
-        const out = extractJson<PlannerOut>(await call(planner));
+        const out = extractJson<PlannerOut>((await call(planner)).text);
         if (signal.aborted) throw signal.reason ?? new Error('aborted');
         const spec: Spec = sanitizeSpec(out, opts.instruction);
         const say = out?.message?.trim() || `需求拆成 ${spec.features.length} 个功能点。`;
@@ -292,7 +383,7 @@ export async function runGeneration(opts: {
       if (designer) {
         progress.step('design');
         emit({ event: 'agent_started', data: { agent: 'designer' } });
-        const out = extractJson<Record<string, unknown>>(await call(designer));
+        const out = extractJson<Record<string, unknown>>((await call(designer)).text);
         if (signal.aborted) throw signal.reason ?? new Error('aborted');
         if (out) {
           const { message, ...design } = out;
@@ -373,7 +464,7 @@ export async function runGeneration(opts: {
         progress.step('suggest');
         ctx.summary = summary;
         emit({ event: 'agent_started', data: { agent: 'advisor' } });
-        const out = extractJson<{ suggestions?: string[] }>(await call(advisor));
+        const out = extractJson<{ suggestions?: string[] }>((await call(advisor)).text);
         const items = (out?.suggestions ?? []).map((s) => String(s).trim()).filter(Boolean).slice(0, 3);
         if (items.length) {
           emit({ event: 'suggestions', data: { items } });
@@ -386,6 +477,12 @@ export async function runGeneration(opts: {
       }
     }
   } catch (err) {
+    if (err instanceof ReplyOnly && !signal.aborted) {
+      // Kai / Max 用文字回答而没有写文件：作为正常回复保存，不算失败，也不生成版本
+      await finish('replied');
+      await persist();
+      return;
+    }
     if (signal.aborted) {
       await finish('cancelled');
       await persist({ role: 'system', agent: null, content: '已停止生成，保留上一个版本。', meta: { runId: run.id, status: 'cancelled' }, version_id: null });

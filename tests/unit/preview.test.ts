@@ -62,6 +62,18 @@ test('sse round trip with heartbeat and arbitrary chunking', () => {
   ]);
 });
 
+test('three.js is injected only when the generated code uses THREE', () => {
+  const plain = buildPreviewHtml({ 'App.jsx': 'function App(){}' }, { vendorBase: '/vendor' });
+  const threeD = buildPreviewHtml({ 'Scene.jsx': 'const scene = new THREE.Scene();', 'App.jsx': 'x' }, { vendorBase: '/vendor' });
+  assert.ok(!plain.includes('/vendor/three.js'));
+  assert.ok(threeD.includes('/vendor/three.js'));
+  // 在 React / Babel 之后、应用脚本之前加载
+  assert.ok(threeD.indexOf('/vendor/babel.js') < threeD.indexOf('/vendor/three.js'));
+  assert.ok(threeD.indexOf('/vendor/three.js') < threeD.indexOf('data-file="Scene.jsx"'));
+  // 只看脚本文件：JSON 数据里出现 THREE 不算
+  assert.ok(!buildPreviewHtml({ 'App.jsx': 'x', 'posts.json': '["THREE"]' }, { vendorBase: '/vendor' }).includes('three.js'));
+});
+
 test('persist: false keeps storage writes inside the iframe (thumbnails)', () => {
   const html = buildPreviewHtml({ 'App.jsx': 'x' }, { vendorBase: '/vendor', persist: false });
   assert.ok(html.includes('makeStorage({},false)'));

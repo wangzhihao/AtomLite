@@ -32,7 +32,7 @@ export type RunContext = {
   summary: string;
 };
 
-export type PromptInput = { system: string; input: string; maxTokens: number };
+export type PromptInput = { system: string; input: string; maxTokens: number; taskBudget?: number };
 
 export type AgentRole = {
   id: Exclude<AgentId, 'leader'>;
@@ -88,6 +88,7 @@ export const ROLES: AgentRole[] = [
       system: ENGINEER_SYSTEM,
       input: buildEngineerInput({ instruction: ctx.instruction, files: ctx.files, history: ctx.history, spec: ctx.spec }),
       maxTokens: LIMITS.maxOutputTokens,
+      taskBudget: LIMITS.fileTaskBudget,
     }),
   },
   {
@@ -101,6 +102,7 @@ export const ROLES: AgentRole[] = [
       system: FIXER_SYSTEM,
       input: buildFixerInput({ errors: ctx.errors, files: ctx.files }),
       maxTokens: LIMITS.maxOutputTokens,
+      taskBudget: LIMITS.fileTaskBudget,
     }),
   },
   {

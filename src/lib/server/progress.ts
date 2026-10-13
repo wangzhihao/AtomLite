@@ -10,7 +10,7 @@ import type { Store } from './store';
  * 前端据此显示步骤条、计时和“模型响应较慢”提示，不再只有一个闪烁的光标。
  */
 const TICK_MS = 2000;
-const DEFAULT_TYPICAL_MS: Record<RunIntent, number> = { create: 60_000, edit: 35_000, fix: 30_000 };
+const DEFAULT_TYPICAL_MS: Record<RunIntent, number> = { create: 60_000, edit: 35_000, fix: 30_000, chat: 8_000 };
 
 const LABELS: Record<StepId, string> = {
   plan: '规划',
@@ -20,9 +20,11 @@ const LABELS: Record<StepId, string> = {
   check: '检查',
   save: '保存',
   suggest: '建议',
+  reply: '回复',
 };
 
 export function planSteps(intent: RunIntent, roles: { planner: boolean; designer: boolean; advisor: boolean }): ProgressStep[] {
+  if (intent === 'chat') return [{ id: 'reply', label: LABELS.reply }];
   const ids: StepId[] =
     intent === 'create'
       ? [...(roles.planner ? (['plan'] as const) : []), ...(roles.designer ? (['design'] as const) : []), 'code', 'check', 'save']
@@ -62,7 +64,7 @@ export class ProgressTracker {
 
   start(steps: ProgressStep[], typicalMs: number) {
     this.emit({ event: 'steps', data: { steps, typicalMs } });
-    this.timer = setInterval(() => this.tick(), TICK_MS);
+    this.timer ??= setInterval(() => this.tick(), TICK_MS);
   }
 
   step(id: StepId) {

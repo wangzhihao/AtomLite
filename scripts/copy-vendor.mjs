@@ -20,6 +20,8 @@ const files = [
   [join(nm, 'react-dom-umd', 'umd', 'react-dom.production.min.js'), 'react-dom.js'],
   [join(nm, '@babel', 'standalone', 'babel.min.js'), 'babel.js'],
   [findTailwind(), 'tailwind.js'],
+  // 按需注入：生成的代码用到 THREE 时才加载（three r159 是最后一个带全局 THREE 构建的版本）
+  [join(nm, 'three-umd', 'build', 'three.min.js'), 'three.js'],
 ];
 
 let missing = 0;

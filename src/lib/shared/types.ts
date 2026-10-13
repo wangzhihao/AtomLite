@@ -42,9 +42,11 @@ export type Message = {
   created_at: string;
 };
 
-export type RunIntent = 'create' | 'edit' | 'fix';
+/** chat：对话（提问、打招呼、讨论），由被点名的成员回答，不生成版本 */
+export type RunIntent = 'create' | 'edit' | 'fix' | 'chat';
 /** needs_input：Planner 发起了需求澄清，本轮不生成代码 */
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_input';
+/** replied：本轮只有文字回复、没有改动（对话，或 Kai 用文字回答而没有写文件） */
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_input' | 'replied';
 
 export type Run = {
   id: string;
@@ -103,7 +105,7 @@ export type QATest = { feature: string; steps: QAStep[] };
 export type QAResult = { feature: string; ok: boolean; error?: string };
 
 /** 进度步骤（设计文档第 3 节）：新建 规划 → 设计 → 编码 → 检查 → 保存 → 建议；修改从编码开始；修复从修复开始 */
-export type StepId = 'plan' | 'design' | 'code' | 'fix' | 'check' | 'save' | 'suggest';
+export type StepId = 'plan' | 'design' | 'code' | 'fix' | 'check' | 'save' | 'suggest' | 'reply';
 export type ProgressStep = { id: StepId; label: string };
 export type ProgressData = {
   step: StepId | null;
@@ -145,11 +147,14 @@ export const LIMITS = {
   totalFileBytes: 200 * 1024,
   maxFiles: 6,
   recentMessages: 6,
-  maxOutputTokens: 16000,
+  /** 单次模型调用的输出上限：强模型的思考也计入这个上限，太小会在写文件之前就被截断 */
+  maxOutputTokens: 32000,
+  /** 写文件的强模型角色的任务预算（模型可见，用来控制思考深度和篇幅） */
+  fileTaskBudget: 24_000,
   runsPerHourUser: 20,
   runsPerDayGuest: 10,
   /** 同一个 run 内自动修复的最大轮数（服务端检查 + 运行时检查合计） */
   maxFixRounds: 2,
   /** 一个 run 含修复的总 token 预算 */
-  runTokenBudget: 60_000,
+  runTokenBudget: 100_000,
 } as const;

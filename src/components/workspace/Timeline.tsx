@@ -266,6 +266,8 @@ export function RunProgress({ live }: { live: LiveRun }) {
         return '正在保存版本';
       case 'suggest':
         return 'Sage 正在想下一步建议';
+      case 'reply':
+        return `${PERSONAS[p?.agent ?? 'leader'].name} 正在回复`;
       default:
         return '团队正在准备';
     }

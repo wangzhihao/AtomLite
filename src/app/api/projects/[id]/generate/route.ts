@@ -121,6 +121,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             errors,
             parentRunId: mode === 'fix' && typeof body.runId === 'string' ? body.runId : null,
             clarified: body.clarified === true,
+            routable: !pendingId && mode !== 'fix' && body.clarified !== true,
             team,
             signal: ctrl.signal,
             emit: (e: AgentEvent) => write(encodeSSE(e.event, e.data)),

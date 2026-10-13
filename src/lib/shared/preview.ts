@@ -155,13 +155,23 @@ ${qa ? QA_RUNNER : ''}
 })();`;
 }
 
+/** 按需注入的白名单库：脚本里用到对应全局变量时才加载，不拖慢其他应用的预览 */
+const OPTIONAL_LIBS: { global: RegExp; file: string }[] = [{ global: /\bTHREE\b/, file: 'three.js' }];
+
+export function optionalLibs(files: Files): string[] {
+  const code = scriptOrder(files)
+    .map((p) => files[p])
+    .join('\n');
+  return OPTIONAL_LIBS.filter((l) => l.global.test(code)).map((l) => l.file);
+}
+
 export function buildPreviewHtml(files: Files, opts: PreviewOptions): string {
   const base = opts.vendorBase.replace(/\/$/, '');
   const head: string[] = [];
   const body: string[] = [];
 
   head.push(`<script>${escapeScript(bridgeScript(opts.storage ?? {}, opts.qa, opts.persist ?? true))}</script>`);
-  for (const lib of ['react.js', 'react-dom.js', 'babel.js', 'tailwind.js']) {
+  for (const lib of ['react.js', 'react-dom.js', 'babel.js', 'tailwind.js', ...optionalLibs(files)]) {
     head.push(`<script src="${base}/${lib}"></script>`);
   }
 
