@@ -1,0 +1,17 @@
+[Unit]
+Description=Atoms Lite (Next.js standalone)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/atomlite/current
+EnvironmentFile=/home/ubuntu/atomlite/atomlite.env
+ExecStart=/usr/bin/node --max-old-space-size=384 server.js
+Restart=always
+RestartSec=3
+MemoryMax=600M
+# OOM 时优先杀这个服务，而不是机器上的其他进程
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

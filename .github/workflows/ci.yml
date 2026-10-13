@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Vendor files present
+        run: ls -la public/vendor && test -s public/vendor/react.js && test -s public/vendor/react-dom.js && test -s public/vendor/babel.js && test -s public/vendor/tailwind.js
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: npm run typecheck
+      - name: Unit tests
+        id: unit
+        continue-on-error: true
+        run: npm run test:unit
+      - name: Build
+        run: npm run build
+        env:
+          ATOMS_SKIP_BUILD_TYPECHECK: '1'
+      - name: Package standalone build
+        run: |
+          cp -r public .next/standalone/public
+          mkdir -p .next/standalone/.next && cp -r .next/static .next/standalone/.next/static
+          rm -rf .next/standalone/.data .next/standalone/.data-e2e
+          tar -czf atomlite-standalone.tgz -C .next/standalone .
+          ls -lh atomlite-standalone.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atomlite-standalone
+          path: atomlite-standalone.tgz
+          retention-days: 14
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+      - name: E2E tests
+        run: npm run test:e2e
+      - name: Fail if typecheck or unit tests failed
+        if: steps.typecheck.outcome == 'failure' || steps.unit.outcome == 'failure'
+        run: exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-results
+          path: |
+            screens/
+            playwright-report/
+            test-results/
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: package-lock
+          path: package-lock.json
+          retention-days: 7
