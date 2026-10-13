@@ -19,6 +19,7 @@ import { LIMITS } from '@/lib/shared/types';
 import { TagParser, type TagEvent } from '@/lib/shared/tag-parser';
 import { role, rolesFor, type AgentRole, type RunContext } from './agents';
 import { checkFiles, errorSignature } from './check';
+import { planSteps, ProgressTracker, typicalDurationMs } from './progress';
 import { addUsage, emptyUsage, extractJson, modelFor, streamLLM, type LLMUsage } from './llm';
 import type { Store } from './store';
 
@@ -84,6 +85,17 @@ export async function runGeneration(opts: {
   }
   emit({ event: 'run_started', data: { runId: run.id, intent } });
 
+  // 进度：步骤清单 + 通常耗时，之后每 2 秒一次心跳（设计文档第 3 节）
+  const progress = new ProgressTracker(emit);
+  progress.start(
+    planSteps(intent, {
+      planner: Boolean(rolesFor('create', 'plan', opts.team)[0]),
+      designer: Boolean(rolesFor('create', 'design', opts.team)[0]),
+      advisor: Boolean(rolesFor(intent, 'after', opts.team).find((r) => r.id === 'advisor')),
+    }),
+    await typicalDurationMs(store, intent),
+  );
+
   const base: LLMUsage = reused
     ? { inputTokens: run.input_tokens, outputTokens: run.output_tokens, cacheReadTokens: run.cache_read_tokens, costUsd: Number(run.cost_usd ?? 0) }
     : emptyUsage();
@@ -116,9 +128,30 @@ export async function runGeneration(opts: {
     return { inputTokens: t.inputTokens + t.cacheReadTokens, outputTokens: t.outputTokens, costUsd: t.costUsd, fixRounds };
   };
 
+  /** 最近一次调用的思路摘要（强模型），随消息保存 */
+  let lastThinking = '';
+
   async function call(r: AgentRole, onText?: (t: string) => void) {
     const p = r.buildPrompt(ctx);
-    const res = await streamLLM({ role: r.id, tier: r.model, system: p.system, input: p.input, maxTokens: p.maxTokens, signal, onText });
+    progress.callStarted(r.id);
+    lastThinking = '';
+    const res = await streamLLM({
+      role: r.id,
+      tier: r.model,
+      system: p.system,
+      input: p.input,
+      maxTokens: p.maxTokens,
+      signal,
+      onText: (t) => {
+        progress.output(t.length);
+        onText?.(t);
+      },
+      onThinking: (t) => {
+        progress.output(t.length);
+        lastThinking += t;
+        emit({ event: 'thinking_delta', data: { agent: r.id, text: t } });
+      },
+    });
     usage = addUsage(usage, res.usage);
     const t = totalUsage();
     if (t.inputTokens + t.cacheReadTokens + t.outputTokens > LIMITS.runTokenBudget) {
@@ -168,6 +201,7 @@ export async function runGeneration(opts: {
         case 'file_end':
           flushDelta();
           changed[e.path] = e.content;
+          progress.fileDone(Buffer.byteLength(e.content));
           emit({ event: 'file_done', data: { path: e.path, bytes: Buffer.byteLength(e.content), content: e.content, agent: id } });
           break;
         case 'delete':
@@ -194,7 +228,7 @@ export async function runGeneration(opts: {
       role: 'agent',
       agent: id,
       content: narrative.trim() || summary,
-      meta: { summary, files: Object.keys(changed), deleted, notes },
+      meta: { summary, files: Object.keys(changed), deleted, notes, ...(lastThinking ? { thinking: lastThinking.trim().slice(0, 4000) } : {}) },
       version_id: null,
     });
     return summary;
@@ -231,6 +265,7 @@ export async function runGeneration(opts: {
       leader(`收到。${crew}。`);
 
       if (planner) {
+        progress.step('plan');
         emit({ event: 'agent_started', data: { agent: 'planner' } });
         const out = extractJson<PlannerOut>(await call(planner));
         if (signal.aborted) throw signal.reason ?? new Error('aborted');
@@ -245,14 +280,17 @@ export async function runGeneration(opts: {
           leader('Nora 有几个问题想先确认，回答后马上开工；也可以点“先帮我随便做”直接开始。');
           await finish('needs_input');
           await persist();
+          progress.stop();
           return;
         }
         emit({ event: 'plan', data: { spec } });
         pending.push({ role: 'agent', agent: 'planner', content: say, meta: { plan: spec }, version_id: null });
         ctx.spec = spec;
+        progress.planFiles(spec.files?.filter((f) => f !== 'design.json').length ?? null);
       }
 
       if (designer) {
+        progress.step('design');
         emit({ event: 'agent_started', data: { agent: 'designer' } });
         const out = extractJson<Record<string, unknown>>(await call(designer));
         if (signal.aborted) throw signal.reason ?? new Error('aborted');
@@ -268,20 +306,24 @@ export async function runGeneration(opts: {
           pending.push({ role: 'agent', agent: 'designer', content: say, meta: { design, files: ['design.json'] }, version_id: null });
         }
       }
+      progress.step('code');
       summary = await runFilesAgent('engineer');
     } else if (intent === 'edit') {
       leader('收到。Kai 直接在现有版本上改，只动需要变更的文件。');
+      progress.step('code');
       summary = await runFilesAgent('engineer');
     } else {
       fixRounds++;
       for (const e of opts.errors) errorKinds.add(e.kind);
       leader(reused ? `预览运行时报错，Max 来自动修复（第 ${fixRounds} 次）。` : '收到。Max 先定位报错原因，再修复相关文件。');
+      progress.step('fix');
       summary = await runFilesAgent('fixer');
     }
 
     // ---------- 第一道关：服务端检查 + 修复回路
     let firstCheckPassed = true;
     let lastSig = '';
+    progress.step('check');
     for (;;) {
       const errs = checkFiles(files);
       if (!errs.length) break;
@@ -302,6 +344,7 @@ export async function runGeneration(opts: {
     const total = Object.values(files).reduce((n, c) => n + Buffer.byteLength(c), 0);
     if (total > LIMITS.totalFileBytes) throw new RunError('too_large', '生成的文件总大小超过 200 KB，请精简需求');
 
+    progress.step('save');
     const version = await store.createVersion(project.id, {
       files,
       summary: summary || null,
@@ -327,6 +370,7 @@ export async function runGeneration(opts: {
     const advisor = rolesFor(intent, 'after', opts.team).find((r) => r.id === 'advisor');
     if (advisor && !signal.aborted) {
       try {
+        progress.step('suggest');
         ctx.summary = summary;
         emit({ event: 'agent_started', data: { agent: 'advisor' } });
         const out = extractJson<{ suggestions?: string[] }>(await call(advisor));
@@ -352,6 +396,8 @@ export async function runGeneration(opts: {
     emit({ event: 'error', data: { code: readable.code, message: readable.message } });
     await finish('failed', { final_ok: false, first_pass: reused ? run.first_pass : false }, readable.message);
     await persist({ role: 'system', agent: null, content: readable.message, meta: { runId: run.id, status: 'failed', code: readable.code }, version_id: null });
+  } finally {
+    progress.stop();
   }
 }
 

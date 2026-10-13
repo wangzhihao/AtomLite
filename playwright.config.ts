@@ -26,6 +26,8 @@ export default defineConfig({
       ATOMS_DATA_DIR: '.data-e2e',
       ATOMS_INSECURE_COOKIE: '1',
       ATOMS_MOCK_DELAY_MS: '10',
+      ATOMS_STALL_WARN_MS: '2000',
+      ATOMS_MOCK_STALL_MS: '5000',
       AUTH_SECRET: 'e2e-secret',
       ANTHROPIC_API_KEY: '',
     },

@@ -16,6 +16,8 @@ export type LLMCall = {
   maxTokens: number;
   signal: AbortSignal;
   onText?: (text: string) => void;
+  /** 模型思路摘要的增量（强模型开启 summarized 思路显示） */
+  onThinking?: (text: string) => void;
 };
 
 let client: Anthropic | null = null;
@@ -60,15 +62,20 @@ export async function streamLLM(call: LLMCall): Promise<LLMResult> {
   if (call.tier === 'strong') {
     params.betas = ['server-side-fallback-2026-07-01'];
     params.fallbacks = 'default';
+    // 思考本来就在发生，计费相同；summarized 让前端能看到“在想什么”，而不是长时间的空白
+    params.thinking = { type: 'adaptive', display: 'summarized' };
   }
   const stream = client.beta.messages.stream(params as unknown as Parameters<typeof client.beta.messages.stream>[0], {
     signal: call.signal,
   });
   let text = '';
   for await (const event of stream) {
-    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+    if (event.type !== 'content_block_delta') continue;
+    if (event.delta.type === 'text_delta') {
       text += event.delta.text;
       call.onText?.(event.delta.text);
+    } else if (event.delta.type === 'thinking_delta') {
+      call.onThinking?.((event.delta as { thinking: string }).thinking);
     }
   }
   const final = await stream.finalMessage();

@@ -1,8 +1,8 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PERSONAS } from '@/components/persona';
 import { timeAgo } from '@/lib/client/api';
-import type { AgentId, CheckError, ClarifyQuestion, Message, QAResult, RunIntent, Spec, Usage } from '@/lib/shared/types';
+import type { AgentId, CheckError, ClarifyQuestion, Message, ProgressData, ProgressStep, QAResult, RunIntent, Spec, StepId, Usage } from '@/lib/shared/types';
 
 export type LiveFile = { path: string; status: 'writing' | 'done'; bytes?: number };
 export type LiveBlock = {
@@ -14,6 +14,8 @@ export type LiveBlock = {
   clarify?: ClarifyQuestion[];
   suggestions?: string[];
   checkErrors?: CheckError[];
+  /** 模型思路摘要（强模型） */
+  thinking?: string;
 };
 export type LiveRun = {
   userText: string | null;
@@ -23,6 +25,13 @@ export type LiveRun = {
   error: string | null;
   usage: Usage | null;
   versionId: string | null;
+  /** 进度：步骤清单、当前步骤、最近一次心跳、最近一次收到任何事件的时间 */
+  steps: ProgressStep[];
+  typicalMs: number | null;
+  step: StepId | null;
+  progress: ProgressData | null;
+  startedAt: number;
+  lastEventAt: number;
 };
 
 /** 交互动作：澄清卡片提交 / 跳过、建议 chip 点击 */
@@ -198,6 +207,123 @@ function Suggestions({ items, actions }: { items: string[]; actions?: TimelineAc
   );
 }
 
+/** 思路摘要：默认折叠成一行，点开看全文 */
+function Thinking({ text, live }: { text: string; live?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const t = text.trim();
+  if (!t) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(!open)}
+      className="mb-1 block w-full rounded-md bg-slate-50 px-2 py-1 text-left text-xs text-slate-500 hover:bg-slate-100"
+      data-testid="thinking"
+      aria-expanded={open}
+    >
+      <span className="mr-1 font-medium text-slate-400">{open ? '▾' : '▸'} 思路</span>
+      <span className={open ? 'whitespace-pre-wrap' : 'line-clamp-1'} data-testid="thinking-text">
+        {t}
+        {live && <span className="caret" />}
+      </span>
+    </button>
+  );
+}
+
+const fmtSec = (ms: number) => `${Math.max(0, Math.round(ms / 1000))} 秒`;
+const fmtTokens = (chars: number) => {
+  const t = Math.round(chars / 2.5);
+  return t >= 1000 ? `${(t / 1000).toFixed(1)}K` : String(t);
+};
+const DISCONNECT_MS = 8000;
+
+/** 进度面板：步骤条 + 当前在做什么、用时、输出量 + 文件进度 + 慢响应 / 断线提示 */
+export function RunProgress({ live }: { live: LiveRun }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (!live.steps.length) return null;
+  const p = live.progress;
+  const elapsed = now - live.startedAt;
+  const sinceEvent = now - live.lastEventAt;
+  const lastBlock = live.blocks[live.blocks.length - 1];
+  const writing = lastBlock?.files.find((f) => f.status === 'writing');
+  const curIdx = live.steps.findIndex((s) => s.id === live.step);
+  const doing = (() => {
+    switch (live.step) {
+      case 'plan':
+        return 'Nora 正在梳理需求';
+      case 'design':
+        return 'Mia 正在定设计规范';
+      case 'code':
+        return writing ? `Kai 正在写 ${writing.path}` : lastBlock?.agent === 'engineer' && lastBlock.text.trim() ? 'Kai 正在说明方案' : 'Kai 正在思考';
+      case 'fix':
+        return writing ? `Max 正在改 ${writing.path}` : 'Max 正在定位问题';
+      case 'check':
+        return p?.agent === 'fixer' || lastBlock?.agent === 'fixer' ? 'Max 正在修复语法问题' : '正在做语法检查';
+      case 'save':
+        return '正在保存版本';
+      case 'suggest':
+        return 'Sage 正在想下一步建议';
+      default:
+        return '团队正在准备';
+    }
+  })();
+  const stalled = p && p.idleMs > p.stallAfterMs && !live.usage;
+  const disconnected = sinceEvent > DISCONNECT_MS && !live.usage;
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-sm" data-testid="progress-bar">
+      <ol className="flex flex-wrap items-center gap-1">
+        {live.steps.map((s, i) => {
+          const status = live.usage ? 'done' : i < curIdx ? 'done' : i === curIdx ? 'active' : 'todo';
+          return (
+            <li key={s.id} className="flex items-center gap-1" data-testid="progress-step" data-status={status} data-step={s.id}>
+              {i > 0 && <span className={`h-px w-3 ${status === 'todo' ? 'bg-slate-200' : 'bg-brand-500'}`} />}
+              <span
+                className={`rounded-full px-2 py-0.5 ${
+                  status === 'done' ? 'bg-brand-50 text-brand-700' : status === 'active' ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-400'
+                }`}
+              >
+                {status === 'done' ? '✓ ' : ''}
+                {s.label}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <p className="mt-2 flex flex-wrap items-center gap-x-2 text-slate-600" data-testid="progress-status">
+        {!live.usage && <span className="h-2 w-2 animate-pulse rounded-full bg-brand-500" />}
+        <span className="font-medium text-slate-700">{live.usage ? '已完成' : doing}</span>
+        <span>· 已用 <span data-testid="progress-elapsed">{fmtSec(elapsed)}</span></span>
+        {p && p.outputChars > 0 && <span>· 约 {fmtTokens(p.outputChars)} tokens</span>}
+        {p && (p.filesPlanned || p.filesDone > 0) && (
+          <span data-testid="progress-files">
+            · 文件 {p.filesDone}
+            {p.filesPlanned ? `/${p.filesPlanned}` : ''}
+            {p.bytes > 0 ? ` · ${(p.bytes / 1024).toFixed(1)} KB` : ''}
+          </span>
+        )}
+        {live.typicalMs && !live.usage && (
+          <span className="text-slate-400" data-testid="progress-typical">
+            · 通常约 {fmtSec(live.typicalMs)}
+            {elapsed > live.typicalMs * 1.5 ? '，这次慢一些' : ''}
+          </span>
+        )}
+      </p>
+      {disconnected ? (
+        <p className="mt-2 rounded-md bg-red-50 px-2 py-1 text-red-700" data-testid="progress-disconnected">
+          {fmtSec(sinceEvent)}没有收到服务器的任何消息，连接可能中断了。可以停止后重试。
+        </p>
+      ) : stalled ? (
+        <p className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-amber-700" data-testid="progress-stall">
+          模型响应较慢：已 {fmtSec(p!.idleMs)}没有新输出，连接正常，仍在等待…
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function CheckErrors({ errors }: { errors: CheckError[] }) {
   return (
     <div className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800" data-testid="check-failed">
@@ -236,9 +362,11 @@ export function MessageItem({ m, actions }: { m: Message; actions?: TimelineActi
     clarify?: ClarifyQuestion[];
     suggestions?: string[];
     qa?: QAResult[];
+    thinking?: string;
   };
   return (
     <AgentBlock agent={agent} testId={`msg-${agent}`}>
+      {meta.thinking && <Thinking text={meta.thinking} />}
       <p className="whitespace-pre-wrap" data-testid="agent-message">
         {m.content}
       </p>
@@ -296,7 +424,8 @@ export function LiveItem({ live }: { live: LiveRun }) {
         const streaming = i === lastIdx && !live.usage;
         return (
           <AgentBlock key={i} agent={b.agent}>
-            <p className={`whitespace-pre-wrap ${streaming ? 'caret' : ''}`}>{b.text.trim()}</p>
+            {b.thinking && <Thinking text={b.thinking} live={streaming && !b.text.trim()} />}
+            <p className={`whitespace-pre-wrap ${streaming && b.text.trim() ? 'caret' : ''}`}>{b.text.trim()}</p>
             {b.plan && <PlanCard spec={b.plan} />}
             {b.design && <DesignCard design={b.design} />}
             {b.clarify && <ClarifyCard questions={b.clarify} />}

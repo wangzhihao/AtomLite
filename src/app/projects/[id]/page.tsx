@@ -6,7 +6,7 @@ import { Preview, type PreviewIssue } from '@/components/Preview';
 import { CodeView, PublishButton, VersionsView } from '@/components/workspace/Panels';
 import { QARunner } from '@/components/workspace/QARunner';
 import { loadTeam, TeamPanel } from '@/components/workspace/TeamPanel';
-import { LiveItem, MessageItem, type LiveBlock, type LiveRun, type TimelineActions } from '@/components/workspace/Timeline';
+import { LiveItem, MessageItem, RunProgress, type LiveBlock, type LiveRun, type TimelineActions } from '@/components/workspace/Timeline';
 import { api, ApiError } from '@/lib/client/api';
 import { streamGenerate } from '@/lib/client/generate';
 import type { AgentId, CheckError, Files, Message, Project, QAResult, QATest, TeamConfig, Version } from '@/lib/shared/types';
@@ -188,7 +188,21 @@ export default function Workspace() {
       setWritingPaths([]);
       setFollowPath(null);
       if (!followRef.current) setTab((t) => (t === 'versions' ? 'preview' : t));
-      setLive({ userText, runId: null, intent: null, blocks: [], error: null, usage: null, versionId: null });
+      setLive({
+        userText,
+        runId: null,
+        intent: null,
+        blocks: [],
+        error: null,
+        usage: null,
+        versionId: null,
+        steps: [],
+        typicalMs: null,
+        step: null,
+        progress: null,
+        startedAt: Date.now(),
+        lastEventAt: Date.now(),
+      });
       let working: Files = { ...(filesRef.current ?? {}) };
       let started = false;
       let runId: string | null = null;
@@ -213,7 +227,26 @@ export default function Workspace() {
           id,
           { ...body, team: teamRef.current },
           (e) => {
+            setLive((l) => l && { ...l, lastEventAt: Date.now() });
             switch (e.event) {
+              case 'steps':
+                setLive((l) => l && { ...l, steps: e.data.steps, typicalMs: e.data.typicalMs });
+                break;
+              case 'step':
+                setLive((l) => l && { ...l, step: e.data.id });
+                break;
+              case 'progress':
+                setLive((l) => l && { ...l, progress: e.data, step: e.data.step ?? l.step });
+                break;
+              case 'thinking_delta':
+                update((blocks) => {
+                  const i = lastOf(blocks, e.data.agent);
+                  if (i < 0) return [...blocks, { agent: e.data.agent, text: '', files: [], thinking: e.data.text }];
+                  const next = blocks.slice();
+                  next[i] = { ...next[i], thinking: (next[i].thinking ?? '') + e.data.text };
+                  return next;
+                });
+                break;
               case 'run_started':
                 started = true;
                 runId = e.data.runId;
@@ -495,6 +528,12 @@ export default function Workspace() {
             )}
             <div ref={timelineEnd} />
           </div>
+          {/* 进度固定在输入框上方，时间线滚动时也始终可见 */}
+          {live && (
+            <div className="border-t border-slate-100 bg-slate-50/80 px-3 py-2">
+              <RunProgress live={live} />
+            </div>
+          )}
           {notice && (
             <div className="mx-4 mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="notice">
               {notice}
