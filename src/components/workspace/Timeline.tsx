@@ -23,6 +23,7 @@ export type LiveRun = {
   intent: RunIntent | null;
   blocks: LiveBlock[];
   error: string | null;
+  errorCode?: string;
   usage: Usage | null;
   versionId: string | null;
   /** 进度：步骤清单、当前步骤、最近一次心跳、最近一次收到任何事件的时间 */
@@ -207,6 +208,26 @@ function Suggestions({ items, actions }: { items: string[]; actions?: TimelineAc
   );
 }
 
+/** 模型额度用完：醒目的提示卡片，邮箱可直接点击 */
+export function QuotaCard({ text }: { text: string }) {
+  const email = /[\w.+-]+@[\w-]+\.[\w.]+/.exec(text)?.[0];
+  const [before, after] = email ? text.split(email) : [text, ''];
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="quota-card" role="alert">
+      <p className="font-semibold">模型服务额度已用完</p>
+      <p className="mt-1 leading-relaxed">
+        {before}
+        {email && (
+          <a href={`mailto:${email}?subject=${encodeURIComponent('Atoms Lite 额度充值')}`} className="font-medium text-brand-700 underline" data-testid="quota-email">
+            {email}
+          </a>
+        )}
+        {after}
+      </p>
+    </div>
+  );
+}
+
 /** 思路摘要：默认折叠成一行，点开看全文 */
 function Thinking({ text, live }: { text: string; live?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -344,6 +365,7 @@ function CheckErrors({ errors }: { errors: CheckError[] }) {
 export function MessageItem({ m, actions }: { m: Message; actions?: TimelineActions }) {
   if (m.role === 'user') return <UserBubble text={m.content} />;
   if (m.role === 'system') {
+    if (m.meta?.code === 'quota') return <QuotaCard text={m.content} />;
     const failed = m.meta?.status === 'failed';
     return (
       <p className={`rounded-lg px-3 py-2 text-xs ${failed ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-500'}`} data-testid="system-message">
@@ -442,7 +464,12 @@ export function LiveItem({ live }: { live: LiveRun }) {
           </AgentBlock>
         );
       })}
-      {live.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{live.error}</p>}
+      {live.error &&
+        (live.errorCode === 'quota' ? (
+          <QuotaCard text={live.error} />
+        ) : (
+          <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{live.error}</p>
+        ))}
     </div>
   );
 }

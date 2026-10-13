@@ -300,7 +300,7 @@ export default function Workspace() {
                 setLive((l) => l && { ...l, versionId: e.data.versionId });
                 break;
               case 'error':
-                setLive((l) => l && { ...l, error: e.data.message });
+                setLive((l) => l && { ...l, error: e.data.message, errorCode: e.data.code });
                 break;
               case 'run_finished':
                 setLive((l) => l && { ...l, usage: e.data.usage });

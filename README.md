@@ -39,6 +39,7 @@ npm run dev          # http://localhost:3000
 | `AUTH_SECRET` | 会话 Cookie 的签名密钥 |
 | `ATOMS_DATA_DIR` | 数据目录，默认 `.data` |
 | `ATOMS_INSECURE_COOKIE` | 设为 `1` 时会话 Cookie 不加 Secure（尚未启用 HTTPS 时需要） |
+| `ATOMS_SUPPORT_EMAIL` | 模型额度用完时提示用户联系充值的邮箱，默认 `accept.acm@gmail.com` |
 | `ATOMS_AGENT_<ID>` | 设为 `0` 全局关闭某个可选角色（`PLANNER`、`DESIGNER`、`ADVISOR`、`QA`） |
 
 ## 部署（EC2）

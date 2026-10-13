@@ -108,7 +108,7 @@ function App() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);`;
 
-const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail|stall|truncate|textonly)\]/g;
+const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail|stall|truncate|textonly|quota)\]/g;
 
 const BROKEN_JSX = APP_JSX.replace('const [text, setText]', 'const boom = undefined.value;\n  const [text, setText]');
 const SYNTAX_JSX = APP_JSX.replace('function add(e) {', 'function add(e) {{');
@@ -316,7 +316,17 @@ function sleep(ms: number, signal: AbortSignal) {
   });
 }
 
+/** 与 SDK 抛出的 402 billing_error 形状一致 */
+class MockBillingError extends Error {
+  status = 402;
+  type = 'billing_error';
+  constructor() {
+    super('402 {"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low to access the Anthropic API."}}');
+  }
+}
+
 export async function mockStream(call: LLMCall): Promise<LLMResult> {
+  if (/\[quota\]/.test(call.input)) throw new MockBillingError();
   const isChat = call.input.startsWith('## 对话');
   const isRouter = call.role === 'leader' && !isChat;
   const text = isRouter
