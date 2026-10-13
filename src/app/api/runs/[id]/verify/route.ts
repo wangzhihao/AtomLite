@@ -1,5 +1,6 @@
 import { fail, json, readJson, withUser } from '@/lib/server/http';
 import type { CheckError, ErrorKind } from '@/lib/shared/types';
+import { LIMITS } from '@/lib/shared/types';
 
 /**
  * 前端回写运行检查结果（设计文档第 5、10 节）：渲染后 3 秒观察窗口内有无运行时错误 / 白屏。
@@ -13,7 +14,7 @@ export const POST = withUser(async ({ store }, req: Request, { params }: { param
   const version = body.versionId ? await store.getVersion(body.versionId) : null;
   if (!version || version.project_id !== run.project_id || version.run_id !== run.id) return fail('版本不属于该 run', 400);
   const ok = body.ok === true;
-  const kinds: ErrorKind[] = ['syntax', 'runtime', 'console', 'blank'];
+  const kinds: ErrorKind[] = ['syntax', 'runtime', 'console', 'blank', 'qa'];
   const errorKinds = new Set(run.error_kinds ?? []);
   for (const e of Array.isArray(body.errors) ? body.errors : []) if (kinds.includes(e?.kind)) errorKinds.add(e.kind);
 
@@ -24,5 +25,5 @@ export const POST = withUser(async ({ store }, req: Request, { params }: { param
     error_kinds: [...errorKinds],
   };
   await store.updateRun(run.id, patch);
-  return json({ run: { ...run, ...patch }, canAutoFix: !ok && run.fix_rounds < 2 });
+  return json({ run: { ...run, ...patch }, canAutoFix: !ok && run.fix_rounds < LIMITS.maxFixRounds });
 });

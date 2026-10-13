@@ -1,5 +1,5 @@
 import 'server-only';
-import type { AgentId, CheckError, Files, Message, RunIntent, Spec } from '@/lib/shared/types';
+import type { AgentId, CheckError, Files, Message, RunIntent, Spec, TeamConfig } from '@/lib/shared/types';
 import { LIMITS } from '@/lib/shared/types';
 import type { ModelTier } from './llm';
 import {
@@ -9,10 +9,12 @@ import {
   buildEngineerInput,
   buildFixerInput,
   buildPlannerInput,
+  buildQAInput,
   DESIGNER_SYSTEM,
   ENGINEER_SYSTEM,
   FIXER_SYSTEM,
   PLANNER_SYSTEM,
+  QA_SYSTEM,
 } from './prompts';
 
 /**
@@ -34,7 +36,8 @@ export type PromptInput = { system: string; input: string; maxTokens: number };
 
 export type AgentRole = {
   id: Exclude<AgentId, 'leader'>;
-  stage: 'plan' | 'design' | 'build' | 'repair' | 'after';
+  /** verify：在浏览器运行检查通过之后，由前端发起 */
+  stage: 'plan' | 'design' | 'build' | 'repair' | 'after' | 'verify';
   intents: RunIntent[];
   model: ModelTier;
   buildPrompt: (ctx: RunContext) => PromptInput;
@@ -113,13 +116,24 @@ export const ROLES: AgentRole[] = [
       maxTokens: 1500,
     }),
   },
+  {
+    id: 'qa',
+    stage: 'verify',
+    intents: ['create', 'edit', 'fix'],
+    model: 'strong',
+    output: 'json',
+    enabled: flag('qa'),
+    buildPrompt: (ctx) => ({ system: QA_SYSTEM, input: buildQAInput({ spec: ctx.spec, files: ctx.files }), maxTokens: 4000 }),
+  },
 ];
 
 export function role(id: AgentRole['id']) {
   return ROLES.find((r) => r.id === id)!;
 }
 
-/** 某条路径上、某个阶段启用的角色 */
-export function rolesFor(intent: RunIntent, stage: AgentRole['stage']) {
-  return ROLES.filter((r) => r.enabled && r.stage === stage && r.intents.includes(intent));
+/** 某条路径上、某个阶段启用的角色；team 是用户在团队配置面板里的开关 */
+export function rolesFor(intent: RunIntent, stage: AgentRole['stage'], team?: Partial<TeamConfig>) {
+  return ROLES.filter(
+    (r) => r.enabled && r.stage === stage && r.intents.includes(intent) && (team?.[r.id as keyof TeamConfig] ?? true) !== false,
+  );
 }

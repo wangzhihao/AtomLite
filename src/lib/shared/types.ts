@@ -85,8 +85,22 @@ export type Spec = {
 export type ClarifyQuestion = { id: string; question: string; placeholder?: string };
 
 /** 运行检查发现的问题 */
-export type ErrorKind = 'syntax' | 'runtime' | 'console' | 'blank';
+export type ErrorKind = 'syntax' | 'runtime' | 'console' | 'blank' | 'qa';
 export type CheckError = { kind: ErrorKind; message: string; file?: string; line?: number | null };
+
+/** 团队配置：可选角色的开关（Kai、Max 必需） */
+export type TeamConfig = { planner: boolean; designer: boolean; advisor: boolean; qa: boolean };
+export const DEFAULT_TEAM: TeamConfig = { planner: true, designer: true, advisor: true, qa: false };
+
+/** 验收 QA：声明式交互步骤，在沙箱 iframe 内执行 */
+export type QAStep =
+  | { action: 'fill'; target: string; value: string }
+  | { action: 'click'; target: string }
+  | { action: 'expectText'; text: string }
+  | { action: 'expectVisible'; target: string }
+  | { action: 'wait'; ms: number };
+export type QATest = { feature: string; steps: QAStep[] };
+export type QAResult = { feature: string; ok: boolean; error?: string };
 
 /** SSE 事件协议（设计文档第 8 节） */
 export type AgentEvent =

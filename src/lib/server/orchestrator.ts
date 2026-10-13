@@ -12,6 +12,7 @@ import type {
   RunStatus,
   SessionUser,
   Spec,
+  TeamConfig,
   Usage,
 } from '@/lib/shared/types';
 import { LIMITS } from '@/lib/shared/types';
@@ -56,6 +57,7 @@ export async function runGeneration(opts: {
   errors: CheckError[];
   parentRunId: string | null;
   clarified: boolean;
+  team?: Partial<TeamConfig>;
   signal: AbortSignal;
   emit: Emit;
 }) {
@@ -203,8 +205,8 @@ export async function runGeneration(opts: {
   try {
     let summary = '';
     if (intent === 'create') {
-      const planner = rolesFor('create', 'plan')[0];
-      const designer = rolesFor('create', 'design')[0];
+      const planner = rolesFor('create', 'plan', opts.team)[0];
+      const designer = rolesFor('create', 'design', opts.team)[0];
       const crew = [planner && 'Nora 先梳理需求', designer && 'Mia 定风格', '然后 Kai 开工'].filter(Boolean).join('，');
       leader(`收到。${crew}。`);
 
@@ -302,7 +304,7 @@ export async function runGeneration(opts: {
     emit({ event: 'version_created', data: { versionId: version.id, seq: version.seq, deleted: [], messageId: '' } });
 
     // ---------- 建议者：在版本落库之后调用，不阻塞主流程，失败也不影响本轮结果
-    const advisor = rolesFor(intent, 'after').find((r) => r.id === 'advisor');
+    const advisor = rolesFor(intent, 'after', opts.team).find((r) => r.id === 'advisor');
     if (advisor && !signal.aborted) {
       try {
         ctx.summary = summary;
@@ -334,7 +336,7 @@ export async function runGeneration(opts: {
 }
 
 /** 修改轮次复用最近一次规划 */
-function findSpec(history: Message[]): Spec | null {
+export function findSpec(history: Message[]): Spec | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     const spec = (m.meta?.plan ?? m.meta?.spec) as Spec | undefined;

@@ -37,10 +37,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       auto: boolean;
       clarified: boolean;
       resume: boolean;
+      team: Record<string, unknown>;
     }>(req);
+    const team = Object.fromEntries(
+      (['planner', 'designer', 'advisor', 'qa'] as const).filter((k) => typeof body.team?.[k] === 'boolean').map((k) => [k, body.team![k] as boolean]),
+    );
     const mode = body.mode === 'fix' ? 'fix' : 'auto';
     const auto = mode === 'fix' && body.auto === true && typeof body.runId === 'string';
-    const kinds: ErrorKind[] = ['syntax', 'runtime', 'console', 'blank'];
+    const kinds: ErrorKind[] = ['syntax', 'runtime', 'console', 'blank', 'qa'];
     const errors: CheckError[] = (Array.isArray(body.errors) ? body.errors : []).slice(0, 10).map((e) =>
       typeof e === 'string'
         ? { kind: 'runtime', message: e.slice(0, 500) }
@@ -118,6 +122,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
             errors,
             parentRunId: mode === 'fix' && typeof body.runId === 'string' ? body.runId : null,
             clarified: body.clarified === true,
+            team,
             signal: ctrl.signal,
             emit: (e: AgentEvent) => write(encodeSSE(e.event, e.data)),
           });

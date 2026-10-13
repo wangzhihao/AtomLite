@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { PERSONAS } from '@/components/persona';
 import { timeAgo } from '@/lib/client/api';
-import type { AgentId, CheckError, ClarifyQuestion, Message, RunIntent, Spec, Usage } from '@/lib/shared/types';
+import type { AgentId, CheckError, ClarifyQuestion, Message, QAResult, RunIntent, Spec, Usage } from '@/lib/shared/types';
 
 export type LiveFile = { path: string; status: 'writing' | 'done'; bytes?: number };
 export type LiveBlock = {
@@ -235,6 +235,7 @@ export function MessageItem({ m, actions }: { m: Message; actions?: TimelineActi
     design?: Record<string, unknown>;
     clarify?: ClarifyQuestion[];
     suggestions?: string[];
+    qa?: QAResult[];
   };
   return (
     <AgentBlock agent={agent} testId={`msg-${agent}`}>
@@ -246,6 +247,16 @@ export function MessageItem({ m, actions }: { m: Message; actions?: TimelineActi
       {meta.design && <DesignCard design={meta.design} />}
       {meta.clarify && <ClarifyCard questions={meta.clarify} actions={actions} />}
       {meta.suggestions && <Suggestions items={meta.suggestions} actions={actions} />}
+      {meta.qa && (
+        <ul className="mt-2 space-y-1 text-xs" data-testid="qa-results">
+          {meta.qa.map((r) => (
+            <li key={r.feature} className={r.ok ? 'text-emerald-700' : 'text-red-600'} data-testid="qa-result">
+              {r.ok ? '✓' : '✗'} {r.feature}
+              {r.error && <span className="ml-1 text-slate-500">— {r.error}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
       {meta.files && meta.files.length > 0 && !meta.design && (
         <ul className="mt-2 space-y-1">
           {meta.files.map((f) => (

@@ -6,12 +6,16 @@ import type { Files } from './types';
  */
 export const PREVIEW_SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups';
 export const PREVIEW_SOURCE = 'atoms-preview';
+/** 父页面发给 iframe 的消息来源标记（验收 QA 指令） */
+export const PARENT_SOURCE = 'atoms-parent';
 
 export type PreviewOptions = {
   /** 自托管库的绝对地址前缀，如 https://example.com/vendor */
   vendorBase: string;
   /** 存储垫片的初始数据（父页面按项目持久化） */
   storage?: Record<string, string>;
+  /** 验收模式：存储不回写父页面、屏蔽弹窗，并接受父页面下发的交互测试 */
+  qa?: boolean;
 };
 
 const DEFAULT_INDEX = `<!doctype html>
@@ -75,7 +79,58 @@ function jsonForScript(v: unknown) {
   return JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 
-export function bridgeScript(storage: Record<string, string>): string {
+/**
+ * 验收 QA 执行器（注入 iframe）：按声明式步骤操作真实页面并回报结果。
+ * 定位：testid= / placeholder= / text= / css=；每步最多等待 1.5 秒元素出现。
+ */
+const QA_RUNNER = `
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+function visible(el){if(!el)return false;var r=el.getBoundingClientRect();var st=getComputedStyle(el);return (r.width>0||r.height>0)&&st.visibility!=='hidden'&&st.display!=='none';}
+function txt(x){return (x.innerText||x.textContent||'').replace(/\\s+/g,' ').trim();}
+function find(target){
+  var i=target.indexOf('=');var kind=i>0?target.slice(0,i):'text';var v=i>0?target.slice(i+1):target;
+  if(kind==='testid')return document.querySelector('[data-testid="'+CSS.escape(v)+'"]');
+  if(kind==='css'){try{return document.querySelector(v);}catch(e){return null;}}
+  if(kind==='placeholder'){var ins=[].slice.call(document.querySelectorAll('input,textarea'));return ins.filter(function(x){return (x.placeholder||'').indexOf(v)>=0;})[0]||null;}
+  var all=[].slice.call(document.querySelectorAll('button,a,[role=button],label,summary,li,span,div,p,h1,h2,h3,h4,td,th'));
+  var exact=all.filter(function(x){return txt(x)===v&&visible(x);});
+  var pref=function(x){return x.tagName==='BUTTON'||x.tagName==='A'||x.getAttribute('role')==='button'?1:0;};
+  exact.sort(function(a,b){return pref(b)-pref(a);});
+  if(exact.length)return exact[0];
+  var inc=all.filter(function(x){return txt(x).indexOf(v)>=0&&visible(x);});
+  inc.sort(function(a,b){return txt(a).length-txt(b).length;});
+  return inc[0]||null;
+}
+async function waitFor(fn,ms){var end=Date.now()+ms;while(Date.now()<end){var r=fn();if(r)return r;await sleep(100);}return fn();}
+function setValue(el,v){var proto=el.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;var d=Object.getOwnPropertyDescriptor(proto,'value');d.set.call(el,v);el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}
+async function runQA(tests){
+  var results=[];
+  for(var t of tests){
+    var err=null;
+    try{
+      for(var s of t.steps){
+        if(s.action==='wait'){await sleep(s.ms);continue;}
+        if(s.action==='expectText'){var ok=await waitFor(function(){return txt(document.body).indexOf(s.text)>=0;},1500);if(!ok)throw new Error('页面上没有出现「'+s.text+'」');continue;}
+        var el=await waitFor(function(){return find(s.target);},1500);
+        if(!el)throw new Error('找不到元素 '+s.target);
+        if(s.action==='expectVisible'){if(!visible(el))throw new Error('元素不可见 '+s.target);continue;}
+        if(s.action==='fill'){el.focus();setValue(el,s.value);await sleep(50);continue;}
+        if(s.action==='click'){el.click();await sleep(200);continue;}
+      }
+    }catch(e){err=String(e&&e.message||e);}
+    results.push({feature:t.feature,ok:!err,error:err||undefined});
+  }
+  return results;
+}
+window.addEventListener('message',function(e){
+  if(e.source!==parent)return;var m=e.data;
+  if(!m||m.source!==${JSON.stringify(PARENT_SOURCE)}||m.type!=='run_qa')return;
+  runQA(m.tests||[]).then(function(r){post('qa_result',{results:r});},function(err){post('qa_result',{results:[],error:String(err)});});
+});
+window.alert=function(){};window.confirm=function(){return true;};window.prompt=function(){return '';};
+`;
+
+export function bridgeScript(storage: Record<string, string>, qa = false): string {
   return `(function(){
 var SOURCE=${JSON.stringify(PREVIEW_SOURCE)};
 function post(type,data){try{parent.postMessage({source:SOURCE,type:type,data:data},'*');}catch(e){}}
@@ -91,9 +146,10 @@ removeItem:function(k){m.delete(String(k));if(persist)post('storage_remove',{key
 clear:function(){m.clear();if(persist)post('storage_clear',{});},
 key:function(i){return Array.from(m.keys())[i]||null;}};
 Object.defineProperty(api,'length',{get:function(){return m.size;}});return api;}
-try{Object.defineProperty(window,'localStorage',{value:makeStorage(${jsonForScript(storage)},true),configurable:true});}catch(e){}
+try{Object.defineProperty(window,'localStorage',{value:makeStorage(${jsonForScript(storage)},${qa ? 'false' : 'true'}),configurable:true});}catch(e){}
 try{Object.defineProperty(window,'sessionStorage',{value:makeStorage({},false),configurable:true});}catch(e){}
-window.addEventListener('load',function(){setTimeout(function(){var r=document.getElementById('root');post('rendered',{empty:!!(r&&!r.children.length&&!r.textContent.trim())});},3000);});
+window.addEventListener('load',function(){setTimeout(function(){var r=document.getElementById('root');post('rendered',{empty:!!(r&&!r.children.length&&!r.textContent.trim())});},${qa ? 800 : 3000});});
+${qa ? QA_RUNNER : ''}
 })();`;
 }
 
@@ -102,7 +158,7 @@ export function buildPreviewHtml(files: Files, opts: PreviewOptions): string {
   const head: string[] = [];
   const body: string[] = [];
 
-  head.push(`<script>${escapeScript(bridgeScript(opts.storage ?? {}))}</script>`);
+  head.push(`<script>${escapeScript(bridgeScript(opts.storage ?? {}, opts.qa))}</script>`);
   for (const lib of ['react.js', 'react-dom.js', 'babel.js', 'tailwind.js']) {
     head.push(`<script src="${base}/${lib}"></script>`);
   }

@@ -108,10 +108,12 @@ function App() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);`;
 
-const MARKERS = /\[(slow|broken|syntax|clarify|stubborn)\]/g;
+const MARKERS = /\[(slow|broken|syntax|clarify|stubborn|qafail)\]/g;
 
 const BROKEN_JSX = APP_JSX.replace('const [text, setText]', 'const boom = undefined.value;\n  const [text, setText]');
 const SYNTAX_JSX = APP_JSX.replace('function add(e) {', 'function add(e) {{');
+// 功能缺陷：有内容时提前返回，添加按钮“没有反应”（没有报错，只有验收 QA 能发现）
+const QAFAIL_JSX = APP_JSX.replace('if (!t) return;', 'if (t) return;');
 
 function titleFrom(req: string) {
   const t = req
@@ -187,7 +189,13 @@ function engineer(input: string) {
   if (!editing) {
     const specName = /"appName":\s*"([^"]*)"/.exec(input)?.[1];
     const title = specName || titleFrom(instruction);
-    let jsx = instruction.includes('[broken]') ? BROKEN_JSX : instruction.includes('[syntax]') ? SYNTAX_JSX : APP_JSX;
+    let jsx = instruction.includes('[broken]')
+      ? BROKEN_JSX
+      : instruction.includes('[syntax]')
+        ? SYNTAX_JSX
+        : instruction.includes('[qafail]')
+          ? QAFAIL_JSX
+          : APP_JSX;
     if (instruction.includes('[stubborn]')) jsx = `// [stubborn]\n${jsx}`;
     out.push(`收到。我来做「${title}」：一个可以添加和勾选条目的清单应用，数据保存在本地。\n`);
     out.push(`<summary>新建应用「${title}」，支持添加、勾选条目，数据本地保存</summary>\n`);
@@ -235,8 +243,39 @@ function fixer(input: string) {
     return `我看了一下，问题比较隐蔽，先尝试保持原样。\n<summary>尝试修复（未成功）</summary>\n<file path="App.jsx">\n${app}\n</file>\n`;
   }
   const syntax = input.includes('[syntax]');
-  const reason = syntax ? '原因是 add 函数里多了一个花括号，导致语法错误' : '原因是渲染时读取了 undefined 的属性';
-  return `${reason}。我去掉了出错的代码，其余逻辑不变。\n<summary>修复：${syntax ? '多余花括号导致的语法错误' : '渲染时访问 undefined 属性的报错'}</summary>\n<file path="App.jsx">\n${APP_JSX}\n</file>\n`;
+  const qa = input.includes('[qa]');
+  const reason = syntax
+    ? '原因是 add 函数里多了一个花括号，导致语法错误'
+    : qa
+      ? '原因是添加条目的判断条件写反了，有内容时反而提前返回'
+      : '原因是渲染时读取了 undefined 的属性';
+  const what = syntax ? '多余花括号导致的语法错误' : qa ? '添加按钮没有反应' : '渲染时访问 undefined 属性的报错';
+  return `${reason}。我改正了出错的代码，其余逻辑不变。\n<summary>修复：${what}</summary>\n<file path="App.jsx">\n${APP_JSX}\n</file>\n`;
+}
+
+function qaTests() {
+  return JSON.stringify({
+    tests: [
+      {
+        feature: '添加条目',
+        steps: [
+          { action: 'fill', target: 'placeholder=添加一项', value: 'QA 测试条目' },
+          { action: 'click', target: 'text=添加' },
+          { action: 'expectText', text: 'QA 测试条目' },
+        ],
+      },
+      {
+        feature: '勾选完成',
+        steps: [
+          { action: 'fill', target: 'placeholder=添加一项', value: 'QA 勾选条目' },
+          { action: 'click', target: 'text=添加' },
+          { action: 'click', target: 'text=QA 勾选条目' },
+          { action: 'expectVisible', target: 'css=li.line-through' },
+        ],
+      },
+      { feature: '标题展示', steps: [{ action: 'expectVisible', target: 'testid=app-title' }] },
+    ],
+  });
 }
 
 function advisor() {
@@ -268,7 +307,9 @@ export async function mockStream(call: LLMCall): Promise<LLMResult> {
           ? fixer(call.input)
           : call.role === 'advisor'
             ? advisor()
-            : engineer(call.input);
+            : call.role === 'qa'
+              ? qaTests()
+              : engineer(call.input);
   const slow = call.role === 'engineer' && /\[slow\]/.test(section(call.input, '本轮修改要求') + section(call.input, '用户需求'));
   const delay = slow ? 250 : env.mockDelayMs;
   const size = 48;

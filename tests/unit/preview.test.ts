@@ -61,3 +61,13 @@ test('sse round trip with heartbeat and arbitrary chunking', () => {
     { event: 'run_finished', data: { status: 'succeeded' } },
   ]);
 });
+
+test('qa mode injects the runner, stubs dialogs and does not persist storage', () => {
+  const normal = buildPreviewHtml({ 'App.jsx': 'x' }, { vendorBase: '/vendor' });
+  const qa = buildPreviewHtml({ 'App.jsx': 'x' }, { vendorBase: '/vendor', qa: true });
+  assert.ok(!normal.includes('run_qa'));
+  assert.ok(qa.includes('run_qa'));
+  assert.ok(qa.includes('window.confirm=function(){return true;}'));
+  assert.ok(normal.includes('makeStorage({},true)'));
+  assert.ok(qa.includes('makeStorage({},false)'));
+});

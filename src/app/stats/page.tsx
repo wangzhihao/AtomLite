@@ -19,7 +19,7 @@ const TARGETS: { key: keyof MetricGroup; label: string; target: string; fmt: (v:
 ];
 
 const INTENT: Record<string, string> = { create: '新建', edit: '修改', fix: '手动修复' };
-const KIND: Record<string, string> = { syntax: '语法错误', runtime: '运行时异常', console: 'console 报错', blank: '白屏' };
+const KIND: Record<string, string> = { syntax: '语法错误', runtime: '运行时异常', console: 'console 报错', blank: '白屏', qa: '验收未通过' };
 
 export default function StatsPage() {
   const router = useRouter();

@@ -4,11 +4,13 @@ import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Preview, type PreviewIssue } from '@/components/Preview';
 import { CodeView, PublishButton, VersionsView } from '@/components/workspace/Panels';
+import { QARunner } from '@/components/workspace/QARunner';
+import { loadTeam, TeamPanel } from '@/components/workspace/TeamPanel';
 import { LiveItem, MessageItem, type LiveBlock, type LiveRun, type TimelineActions } from '@/components/workspace/Timeline';
 import { api, ApiError } from '@/lib/client/api';
 import { streamGenerate } from '@/lib/client/generate';
-import type { AgentId, CheckError, Files, Message, Project, Version } from '@/lib/shared/types';
-import { LIMITS } from '@/lib/shared/types';
+import type { AgentId, CheckError, Files, Message, Project, QAResult, QATest, TeamConfig, Version } from '@/lib/shared/types';
+import { DEFAULT_TEAM, LIMITS } from '@/lib/shared/types';
 
 type Loaded = { project: Project; messages: Message[]; version: Version | null; running: boolean };
 type RunBody = {
@@ -27,11 +29,13 @@ type HealState = { runId: string; versionId: string; armed: boolean; issues: Pre
 const PREVIEW_DEBOUNCE_MS = 500;
 const VERIFY_TIMEOUT_MS = 9000;
 
-const signatureOf = (issues: PreviewIssue[]) =>
-  issues
-    .map((i) => `${i.kind}|${i.message.slice(0, 120)}`)
+const signatureOf = (errors: CheckError[]) =>
+  errors
+    .map((e) => `${e.kind}|${e.message.slice(0, 120)}`)
     .sort()
     .join('\n');
+
+type QAJob = { runId: string; versionId: string; tests: QATest[]; files: Files };
 
 export default function Workspace() {
   const { id } = useParams<{ id: string }>();
@@ -48,6 +52,11 @@ export default function Workspace() {
   const [reloadKey, setReloadKey] = useState(0);
   const [issues, setIssues] = useState<PreviewIssue[]>([]);
   const [healing, setHealing] = useState(false);
+  const [healLabel, setHealLabel] = useState('');
+  const [qaJob, setQaJob] = useState<QAJob | null>(null);
+  const [team, setTeam] = useState<TeamConfig>(DEFAULT_TEAM);
+  const teamRef = useRef(team);
+  teamRef.current = team;
   const [viewing, setViewing] = useState<Version | null>(null);
   const [pane, setPane] = useState<'chat' | 'preview'>('chat');
 
@@ -80,7 +89,21 @@ export default function Workspace() {
 
   const runRef = useRef<(body: RunBody, userText: string | null) => Promise<void>>(async () => undefined);
 
-  /** 运行检查结束：回写结果，必要时自动发起修复 */
+  /** 检查失败：还有自动修复额度且错误签名没出现过时，交给 Max 在同一个 run 里修复；否则停下来交给用户 */
+  const autoFixOrStop = useCallback((h: HealState, errors: CheckError[], canAutoFix: boolean) => {
+    const sig = signatureOf(errors);
+    if (canAutoFix && h.autoFixes < LIMITS.maxFixRounds && !h.signatures.includes(sig)) {
+      heal.current = { ...h, autoFixes: h.autoFixes + 1, signatures: [...h.signatures, sig], armed: false, issues: [] };
+      setHealing(true);
+      setHealLabel('Max 正在自动修复…');
+      runRef.current({ mode: 'fix', auto: true, runId: h.runId, errors }, null);
+    } else {
+      heal.current = null;
+      setHealing(false);
+    }
+  }, []);
+
+  /** 运行检查结束：回写结果；通过且开启了 Quinn 时进入验收，失败则自动修复 */
   const finishVerify = useCallback(async () => {
     const h = heal.current;
     if (!h || !h.armed) return;
@@ -96,20 +119,49 @@ export default function Workspace() {
       /* 回写失败不影响使用 */
     }
     if (ok) {
-      heal.current = null;
+      if (teamRef.current.qa && filesRef.current) {
+        const files = filesRef.current;
+        setHealing(true);
+        setHealLabel('Quinn 正在按功能点验收…');
+        try {
+          const { tests } = await api<{ tests: QATest[] }>(`/api/runs/${h.runId}/qa`, { method: 'POST', json: { versionId: h.versionId } });
+          if (heal.current === h && tests.length) {
+            setQaJob({ runId: h.runId, versionId: h.versionId, tests, files });
+            return;
+          }
+        } catch {
+          /* 验收失败不影响使用 */
+        }
+      }
+      if (heal.current === h) heal.current = null;
       setHealing(false);
       return;
     }
-    const sig = signatureOf(h.issues);
-    if (canAutoFix && h.autoFixes < LIMITS.maxFixRounds && !h.signatures.includes(sig)) {
-      heal.current = { ...h, autoFixes: h.autoFixes + 1, signatures: [...h.signatures, sig], armed: false, issues: [] };
-      setHealing(true);
-      runRef.current({ mode: 'fix', auto: true, runId: h.runId, errors }, null);
-    } else {
-      heal.current = null;
-      setHealing(false);
-    }
-  }, []);
+    autoFixOrStop(h, errors, canAutoFix);
+  }, [autoFixOrStop]);
+
+  const onQADone = useCallback(
+    async (job: QAJob, results: QAResult[]) => {
+      setQaJob(null);
+      const h = heal.current;
+      let r = { ok: true, canAutoFix: false };
+      try {
+        r = await api<{ ok: boolean; canAutoFix: boolean }>(`/api/runs/${job.runId}/qa-result`, { method: 'POST', json: { versionId: job.versionId, results } });
+      } catch {
+        /* 忽略 */
+      }
+      await load();
+      if (!h || h.runId !== job.runId) return;
+      if (r.ok) {
+        heal.current = null;
+        setHealing(false);
+        return;
+      }
+      const errors: CheckError[] = results.filter((x) => !x.ok).map((x) => ({ kind: 'qa', message: `功能「${x.feature}」验收失败：${x.error ?? '未知原因'}` }));
+      autoFixOrStop(h, errors, r.canAutoFix);
+    },
+    [autoFixOrStop, load],
+  );
 
   const run = useCallback(
     async (body: RunBody, userText: string | null) => {
@@ -145,7 +197,7 @@ export default function Workspace() {
       try {
         await streamGenerate(
           id,
-          body,
+          { ...body, team: teamRef.current },
           (e) => {
             switch (e.event) {
               case 'run_started':
@@ -221,6 +273,8 @@ export default function Workspace() {
           };
           if (healTimer.current) clearTimeout(healTimer.current);
           healTimer.current = setTimeout(() => void finishVerify(), VERIFY_TIMEOUT_MS);
+          setHealing(true);
+          setHealLabel('正在检查预览运行情况…');
         } else {
           heal.current = null;
           setHealing(false);
@@ -248,6 +302,8 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  useEffect(() => setTeam(loadTeam()), []);
+
   useEffect(() => {
     timelineEnd.current?.scrollIntoView({ block: 'end' });
   }, [data?.messages.length, live]);
@@ -264,6 +320,7 @@ export default function Workspace() {
     if (!ctrl) return;
     heal.current = null;
     setHealing(false);
+    setQaJob(null);
     try {
       await api(`/api/projects/${id}/cancel`, { method: 'POST' });
     } catch {
@@ -373,10 +430,12 @@ export default function Workspace() {
               </button>
             ))}
           </div>
+          <TeamPanel team={team} onChange={setTeam} />
           <PublishButton project={data.project} disabled={running} onPublished={(p) => setData({ ...data, project: p })} />
         </div>
       </div>
 
+      {qaJob && <QARunner key={qaJob.versionId} files={qaJob.files} tests={qaJob.tests} onDone={(results) => void onQADone(qaJob, results)} />}
       <div className="flex min-h-0 flex-1">
         {/* 左：对话与 Agent 时间线 */}
         <section
@@ -390,7 +449,7 @@ export default function Workspace() {
             {live && <LiveItem live={live} />}
             {healing && !running && (
               <p className="rounded-lg bg-orange-50 px-3 py-2 text-xs text-orange-700" data-testid="healing">
-                正在检查预览运行情况…
+                {healLabel}
               </p>
             )}
             <div ref={timelineEnd} />
