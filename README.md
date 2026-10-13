@@ -45,6 +45,18 @@ npm run dev          # http://localhost:3000
 2. Vercel 导入本仓库，配置上面的环境变量（线上必须配置 Supabase，本地文件存储在 Serverless 环境中不可持久化）。
 3. 生成接口设置了 `maxDuration = 300`，请确认 Vercel 套餐允许的函数最长执行时长。
 
+### 部署到自己的服务器（EC2）
+
+本机只运行、不构建：CI 产出 Next.js standalone 产物（`atomlite-standalone` artifact），`deploy/deploy-ec2.sh` 下载后解压到 `/home/ubuntu/atomlite/releases/<sha>`，切换 `current` 软链并重启 systemd 服务，健康检查失败会自动回滚。
+
+```bash
+sudo cp deploy/atomlite.service /etc/systemd/system/   # 首次：安装服务（端口等配置在 /home/ubuntu/atomlite/atomlite.env）
+deploy/deploy-ec2.sh            # 部署当前分支最近一次成功的 CI；也可传入 run id
+sudo journalctl -u atomlite -f  # 查看日志
+```
+
+服务器上使用本地文件存储（`/home/ubuntu/atomlite/data`），服务内存上限 600 MB。
+
 ## 测试
 
 ```bash
