@@ -1,0 +1,46 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+@keyframes atoms-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.caret::after {
+  content: '▍';
+  margin-left: 1px;
+  animation: atoms-blink 1s steps(1) infinite;
+  color: #94a3b8;
+}
+
+@keyframes atoms-shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 37%, #f1f5f9 63%);
+  background-size: 800px 100%;
+  animation: atoms-shimmer 1.4s ease infinite;
+}
