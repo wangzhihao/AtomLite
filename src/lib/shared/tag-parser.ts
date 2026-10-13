@@ -4,7 +4,8 @@
  * 可以边流边解析；未闭合的 file 标签在 finish() 时整段丢弃，其余文件不受影响。
  */
 export type TagEvent =
-  | { type: 'text'; text: string }
+  /** inSummary：这段文字属于 <summary>，持久化时与说明文字分开存放 */
+  | { type: 'text'; text: string; inSummary?: boolean }
   | { type: 'summary'; text: string }
   | { type: 'file_start'; path: string }
   | { type: 'file_end'; path: string; content: string }
@@ -100,7 +101,7 @@ export class TagParser {
   private emitSummary(out: TagEvent[], text: string) {
     if (!text) return;
     this.summary += text;
-    out.push({ type: 'text', text });
+    out.push({ type: 'text', text, inSummary: true });
   }
 }
 

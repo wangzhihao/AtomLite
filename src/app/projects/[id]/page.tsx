@@ -3,26 +3,35 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Preview, type PreviewIssue } from '@/components/Preview';
-import { PERSONAS } from '@/components/persona';
-import { api, ApiError, timeAgo } from '@/lib/client/api';
+import { CodeView, PublishButton, VersionsView } from '@/components/workspace/Panels';
+import { LiveItem, MessageItem, type LiveBlock, type LiveRun, type TimelineActions } from '@/components/workspace/Timeline';
+import { api, ApiError } from '@/lib/client/api';
 import { streamGenerate } from '@/lib/client/generate';
-import type { AgentId, Files, Message, Project, RunIntent, Usage, Version, VersionMeta } from '@/lib/shared/types';
+import type { AgentId, CheckError, Files, Message, Project, Version } from '@/lib/shared/types';
 import { LIMITS } from '@/lib/shared/types';
 
 type Loaded = { project: Project; messages: Message[]; version: Version | null; running: boolean };
-
-type LiveFile = { path: string; status: 'writing' | 'done'; bytes?: number };
-type LiveRun = {
-  userText: string | null;
-  intent: RunIntent | null;
-  leader: string;
-  engineer: string;
-  files: LiveFile[];
-  error: string | null;
-  usage: Usage | null;
+type RunBody = {
+  message?: string;
+  mode?: 'auto' | 'fix';
+  errors?: (string | CheckError)[];
+  runId?: string;
+  auto?: boolean;
+  clarified?: boolean;
+  resume?: boolean;
 };
 
+/** 自愈回路的状态：版本落库后等待运行检查，失败则自动修复（同一 run 最多 2 次，同一错误签名重复即停） */
+type HealState = { runId: string; versionId: string; armed: boolean; issues: PreviewIssue[]; autoFixes: number; signatures: string[] };
+
 const PREVIEW_DEBOUNCE_MS = 500;
+const VERIFY_TIMEOUT_MS = 9000;
+
+const signatureOf = (issues: PreviewIssue[]) =>
+  issues
+    .map((i) => `${i.kind}|${i.message.slice(0, 120)}`)
+    .sort()
+    .join('\n');
 
 export default function Workspace() {
   const { id } = useParams<{ id: string }>();
@@ -38,6 +47,7 @@ export default function Workspace() {
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
   const [reloadKey, setReloadKey] = useState(0);
   const [issues, setIssues] = useState<PreviewIssue[]>([]);
+  const [healing, setHealing] = useState(false);
   const [viewing, setViewing] = useState<Version | null>(null);
   const [pane, setPane] = useState<'chat' | 'preview'>('chat');
 
@@ -45,6 +55,10 @@ export default function Workspace() {
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumed = useRef(false);
   const timelineEnd = useRef<HTMLDivElement>(null);
+  const heal = useRef<HealState | null>(null);
+  const healTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const filesRef = useRef<Files | null>(null);
+  filesRef.current = files;
 
   const load = useCallback(async () => {
     try {
@@ -64,19 +78,70 @@ export default function Workspace() {
     previewTimer.current = setTimeout(() => setFiles(next), PREVIEW_DEBOUNCE_MS);
   };
 
+  const runRef = useRef<(body: RunBody, userText: string | null) => Promise<void>>(async () => undefined);
+
+  /** 运行检查结束：回写结果，必要时自动发起修复 */
+  const finishVerify = useCallback(async () => {
+    const h = heal.current;
+    if (!h || !h.armed) return;
+    h.armed = false;
+    if (healTimer.current) clearTimeout(healTimer.current);
+    const ok = h.issues.length === 0;
+    const errors: CheckError[] = h.issues.map((i) => ({ kind: i.kind, message: i.message }));
+    let canAutoFix = false;
+    try {
+      const r = await api<{ canAutoFix: boolean }>(`/api/runs/${h.runId}/verify`, { method: 'POST', json: { versionId: h.versionId, ok, errors } });
+      canAutoFix = r.canAutoFix;
+    } catch {
+      /* 回写失败不影响使用 */
+    }
+    if (ok) {
+      heal.current = null;
+      setHealing(false);
+      return;
+    }
+    const sig = signatureOf(h.issues);
+    if (canAutoFix && h.autoFixes < LIMITS.maxFixRounds && !h.signatures.includes(sig)) {
+      heal.current = { ...h, autoFixes: h.autoFixes + 1, signatures: [...h.signatures, sig], armed: false, issues: [] };
+      setHealing(true);
+      runRef.current({ mode: 'fix', auto: true, runId: h.runId, errors }, null);
+    } else {
+      heal.current = null;
+      setHealing(false);
+    }
+  }, []);
+
   const run = useCallback(
-    async (body: { message?: string; mode?: 'auto' | 'fix'; errors?: string[]; resume?: boolean }, userText: string | null) => {
+    async (body: RunBody, userText: string | null) => {
       if (abortRef.current) return;
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      if (!body.auto) heal.current = null;
       setRunning(true);
       setNotice('');
       setIssues([]);
       setViewing(null);
       setTab('preview');
-      setLive({ userText, intent: null, leader: '', engineer: '', files: [], error: null, usage: null });
-      let working: Files = { ...(files ?? {}) };
+      setLive({ userText, runId: null, intent: null, blocks: [], error: null, usage: null, versionId: null });
+      let working: Files = { ...(filesRef.current ?? {}) };
       let started = false;
+      let runId: string | null = null;
+      let versionId: string | null = null;
+
+      const update = (fn: (blocks: LiveBlock[]) => LiveBlock[]) => setLive((l) => l && { ...l, blocks: fn(l.blocks) });
+      const lastOf = (blocks: LiveBlock[], agent?: AgentId) => {
+        for (let i = blocks.length - 1; i >= 0; i--) if (!agent || blocks[i].agent === agent) return i;
+        return -1;
+      };
+      const patchLast = (agent: AgentId | undefined, fn: (b: LiveBlock) => LiveBlock) =>
+        update((blocks) => {
+          const i = lastOf(blocks, agent);
+          if (i < 0) return blocks;
+          const next = blocks.slice();
+          next[i] = fn(next[i]);
+          return next;
+        });
+
       try {
         await streamGenerate(
           id,
@@ -85,27 +150,44 @@ export default function Workspace() {
             switch (e.event) {
               case 'run_started':
                 started = true;
-                setLive((l) => l && { ...l, intent: e.data.intent });
+                runId = e.data.runId;
+                setLive((l) => l && { ...l, intent: e.data.intent, runId: e.data.runId });
+                break;
+              case 'agent_started':
+                update((blocks) => [...blocks, { agent: e.data.agent, text: '', files: [] }]);
                 break;
               case 'message_delta':
-                setLive((l) => {
-                  if (!l) return l;
-                  return e.data.agent === 'leader'
-                    ? { ...l, leader: l.leader + e.data.text }
-                    : { ...l, engineer: l.engineer + e.data.text };
-                });
+                patchLast(e.data.agent, (b) => ({ ...b, text: b.text + e.data.text }));
                 break;
               case 'file_started':
-                setLive((l) => l && { ...l, files: [...l.files.filter((f) => f.path !== e.data.path), { path: e.data.path, status: 'writing' }] });
+                patchLast(e.data.agent, (b) => ({ ...b, files: [...b.files.filter((f) => f.path !== e.data.path), { path: e.data.path, status: 'writing' }] }));
                 break;
               case 'file_done':
                 working = { ...working, [e.data.path]: e.data.content };
-                setLive((l) => l && { ...l, files: l.files.map((f) => (f.path === e.data.path ? { ...f, status: 'done', bytes: e.data.bytes } : f)) });
+                patchLast(e.data.agent, (b) => ({
+                  ...b,
+                  files: b.files.map((f) => (f.path === e.data.path ? { ...f, status: 'done', bytes: e.data.bytes } : f)),
+                }));
                 schedulePreview(working);
                 break;
+              case 'plan':
+                patchLast('planner', (b) => ({ ...b, plan: e.data.spec }));
+                break;
+              case 'design':
+                patchLast('designer', (b) => ({ ...b, design: e.data.design }));
+                break;
+              case 'clarify':
+                patchLast('planner', (b) => ({ ...b, clarify: e.data.questions }));
+                break;
+              case 'check_failed':
+                update((blocks) => [...blocks, { agent: 'note', text: '', files: [], checkErrors: e.data.errors }]);
+                break;
+              case 'suggestions':
+                patchLast('advisor', (b) => ({ ...b, suggestions: e.data.items }));
+                break;
               case 'version_created':
-                for (const p of e.data.deleted) delete working[p];
-                schedulePreview(working);
+                versionId = e.data.versionId;
+                setLive((l) => l && { ...l, versionId: e.data.versionId });
                 break;
               case 'error':
                 setLive((l) => l && { ...l, error: e.data.message });
@@ -125,14 +207,31 @@ export default function Workspace() {
       } finally {
         if (previewTimer.current) clearTimeout(previewTimer.current);
         abortRef.current = null;
+        // 有新版本时进入运行检查：等预览渲染后 3 秒观察窗口结束
+        if (runId && versionId) {
+          const prev = heal.current;
+          heal.current = {
+            runId,
+            versionId,
+            armed: true,
+            issues: [],
+            autoFixes: prev?.runId === runId ? prev.autoFixes : 0,
+            signatures: prev?.runId === runId ? prev.signatures : [],
+          };
+          if (healTimer.current) clearTimeout(healTimer.current);
+          healTimer.current = setTimeout(() => void finishVerify(), VERIFY_TIMEOUT_MS);
+        } else {
+          heal.current = null;
+          setHealing(false);
+        }
         await load();
         setLive(null);
         setRunning(false);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [id, files, load],
+    [id, load, finishVerify],
   );
+  runRef.current = run;
 
   useEffect(() => {
     load().then((d) => {
@@ -148,11 +247,20 @@ export default function Workspace() {
 
   useEffect(() => {
     timelineEnd.current?.scrollIntoView({ block: 'end' });
-  }, [data?.messages.length, live?.engineer, live?.leader, live?.files.length]);
+  }, [data?.messages.length, live]);
+
+  useEffect(
+    () => () => {
+      if (healTimer.current) clearTimeout(healTimer.current);
+    },
+    [],
+  );
 
   async function stop() {
     const ctrl = abortRef.current;
     if (!ctrl) return;
+    heal.current = null;
+    setHealing(false);
     try {
       await api(`/api/projects/${id}/cancel`, { method: 'POST' });
     } catch {
@@ -161,26 +269,35 @@ export default function Workspace() {
     setTimeout(() => ctrl.abort(), 3000);
   }
 
+  function sendText(text: string, extra: Partial<RunBody> = {}) {
+    if (!text.trim() || abortRef.current) return;
+    run({ message: text.trim(), ...extra }, text.trim());
+  }
+
   function send(e?: React.FormEvent) {
     e?.preventDefault();
-    const text = input.trim();
-    if (!text || running) return;
+    if (!input.trim() || running) return;
+    const text = input;
     setInput('');
-    run({ message: text }, text);
+    sendText(text);
   }
 
   function fix() {
-    const errors = issues.map((i) => i.message);
-    run({ mode: 'fix', errors }, `让 Agent 修复：\n${errors.join('\n')}`);
+    const errors = issues.map((i) => ({ kind: i.kind, message: i.message }));
+    run({ mode: 'fix', errors }, `让 Agent 修复：\n${errors.map((e) => e.message).join('\n')}`);
   }
 
-  const onIssue = useCallback(
-    (issue: PreviewIssue) => {
-      if (abortRef.current) return; // 生成过程中的半成品报错不展示
-      setIssues((list) => (list.some((x) => x.message === issue.message) || list.length >= 5 ? list : [...list, issue]));
-    },
-    [],
-  );
+  const onIssue = useCallback((issue: PreviewIssue) => {
+    if (abortRef.current) return; // 生成过程中的半成品报错不展示
+    const h = heal.current;
+    if (h?.armed && !h.issues.some((x) => x.message === issue.message)) h.issues.push(issue);
+    setIssues((list) => (list.some((x) => x.message === issue.message) || list.length >= 5 ? list : [...list, issue]));
+  }, []);
+
+  const onRendered = useCallback(() => {
+    if (abortRef.current) return;
+    void finishVerify();
+  }, [finishVerify]);
 
   async function rename(name: string) {
     if (!data || !name.trim() || name === data.project.name) return;
@@ -200,19 +317,43 @@ export default function Workspace() {
   }
   if (!data) return <div className="skeleton m-4 h-[calc(100%-2rem)] rounded-xl" />;
 
+  // 只有最后一条 Agent 消息上的澄清卡片 / 建议 chip 可以交互
+  const lastIdx = data.messages.length - 1;
+  const lastMsg = data.messages[lastIdx];
+  const interactiveId =
+    !running && lastMsg && lastMsg.role === 'agent' && (lastMsg.meta?.suggestions || lastMsg.meta?.clarify)
+      ? lastMsg.id
+      : !running && lastMsg?.agent === 'leader' && data.messages[lastIdx - 1]?.meta?.clarify
+        ? data.messages[lastIdx - 1].id
+        : null;
+  const originalRequest = [...data.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+  const actions: TimelineActions = {
+    interactive: true,
+    onClarify: (answers) => {
+      const filled = answers?.filter((a) => a.answer);
+      const text = filled?.length
+        ? `${originalRequest}\n\n补充信息：\n${filled.map((a) => `- ${a.question} ${a.answer}`).join('\n')}`
+        : `${originalRequest}\n\n（先帮我随便做：缺少的信息请用合理的默认值，并在改动摘要里列出所做的假设）`;
+      sendText(text, { clarified: true });
+    },
+    onSuggest: (s) => sendText(s),
+  };
+
   const shownFiles = viewing?.files ?? files;
-  const writing = live?.files.find((f) => f.status === 'writing');
+  const lastBlock = live?.blocks[live.blocks.length - 1];
+  const writing = lastBlock?.files.find((f) => f.status === 'writing');
+  const who = lastBlock && lastBlock.agent !== 'note' && lastBlock.agent !== 'leader' ? lastBlock.agent : null;
+  const NAMES: Partial<Record<AgentId, string>> = { planner: 'Nora 正在梳理需求…', designer: 'Mia 正在定设计规范…', engineer: 'Kai 正在思考…', fixer: 'Max 正在修复…', advisor: 'Sage 正在想建议…' };
   const overlay = running
     ? writing
-      ? `Kai 正在写入 ${writing.path}`
-      : live?.files.length
-        ? 'Kai 正在收尾…'
-        : 'Kai 正在思考…'
+      ? `${who === 'fixer' ? 'Max' : who === 'designer' ? 'Mia' : 'Kai'} 正在写入 ${writing.path}`
+      : (who && NAMES[who]) || '团队正在准备…'
     : null;
+  const showErrorBar = issues.length > 0 && !running && !healing && tab === 'preview' && !viewing;
 
   return (
     <div className="flex h-full flex-col">
-      {/* 顶栏：项目名、设备切换 */}
+      {/* 顶栏：项目名、版本、发布 */}
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-3">
         <Link href="/projects" className="text-slate-400 hover:text-slate-700" title="返回项目列表">
           ←
@@ -221,26 +362,34 @@ export default function Workspace() {
         <span className="hidden text-xs text-slate-400 sm:inline" data-testid="version-badge">
           {data.version ? `版本 ${data.version.seq}` : '未生成'}
         </span>
-        <div className="ml-auto flex items-center gap-1 md:hidden">
-          {(['chat', 'preview'] as const).map((p) => (
-            <button key={p} onClick={() => setPane(p)} className={`rounded px-2 py-1 text-xs ${pane === p ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>
-              {p === 'chat' ? '对话' : '预览'}
-            </button>
-          ))}
+        <div className="ml-auto flex items-center gap-2">
+          <div className="flex items-center gap-1 md:hidden">
+            {(['chat', 'preview'] as const).map((p) => (
+              <button key={p} onClick={() => setPane(p)} className={`rounded px-2 py-1 text-xs ${pane === p ? 'bg-slate-900 text-white' : 'text-slate-500'}`}>
+                {p === 'chat' ? '对话' : '预览'}
+              </button>
+            ))}
+          </div>
+          <PublishButton project={data.project} disabled={running} onPublished={(p) => setData({ ...data, project: p })} />
         </div>
       </div>
 
       <div className="flex min-h-0 flex-1">
         {/* 左：对话与 Agent 时间线 */}
-        <section className={`${pane === 'chat' ? 'flex' : 'hidden'} w-full min-w-0 flex-col border-r border-slate-200 bg-white md:flex md:w-[420px] md:shrink-0`}>
+        <section
+          className={`${pane === 'chat' ? 'flex' : 'hidden'} w-full min-w-0 flex-col border-r border-slate-200 bg-white md:flex md:w-[420px] md:shrink-0`}
+        >
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" data-testid="timeline">
-            {data.messages.length === 0 && !live && (
-              <p className="mt-10 text-center text-sm text-slate-400">描述你想要的应用，比如“做一个番茄钟”。</p>
-            )}
+            {data.messages.length === 0 && !live && <p className="mt-10 text-center text-sm text-slate-400">描述你想要的应用，比如“做一个番茄钟”。</p>}
             {data.messages.map((m) => (
-              <MessageItem key={m.id} m={m} />
+              <MessageItem key={m.id} m={m} actions={m.id === interactiveId ? actions : undefined} />
             ))}
             {live && <LiveItem live={live} />}
+            {healing && !running && (
+              <p className="rounded-lg bg-orange-50 px-3 py-2 text-xs text-orange-700" data-testid="healing">
+                正在检查预览运行情况…
+              </p>
+            )}
             <div ref={timelineEnd} />
           </div>
           {notice && (
@@ -335,26 +484,40 @@ export default function Workspace() {
 
           <div className="relative min-h-0 flex-1">
             <div className={tab === 'preview' ? 'h-full' : 'hidden'}>
-              <Preview projectId={id} files={shownFiles} reloadKey={reloadKey} device={device} overlay={overlay} onIssue={onIssue} />
+              <Preview
+                projectId={id}
+                files={shownFiles}
+                reloadKey={reloadKey}
+                device={device}
+                overlay={overlay}
+                onIssue={viewing ? undefined : onIssue}
+                onRendered={viewing ? undefined : onRendered}
+              />
             </div>
             {tab === 'code' && <CodeView files={shownFiles} />}
             {tab === 'versions' && (
               <VersionsView
                 projectId={id}
-                currentId={data.project.current_version_id}
+                project={data.project}
                 refreshKey={data.version?.id ?? ''}
+                busy={running}
                 onView={(v) => {
                   setViewing(v.id === data.project.current_version_id ? null : v);
                   setTab('preview');
+                }}
+                onRestored={() => {
+                  setViewing(null);
+                  setIssues([]);
+                  void load();
                 }}
               />
             )}
           </div>
 
-          {issues.length > 0 && !running && tab === 'preview' && (
+          {showErrorBar && (
             <div className="flex items-start gap-3 border-t border-red-200 bg-red-50 px-3 py-2 text-sm" data-testid="error-bar">
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-red-700">预览运行出错了</p>
+                <p className="font-medium text-red-700">预览运行出错了{data.version?.source === 'autofix' ? '（自动修复未能解决）' : ''}</p>
                 {issues.map((i) => (
                   <p key={i.message} className="truncate text-xs text-red-600" title={i.message}>
                     {i.message}
@@ -371,118 +534,6 @@ export default function Workspace() {
           )}
         </section>
       </div>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------ 子组件
-
-function Avatar({ agent }: { agent: AgentId }) {
-  const p = PERSONAS[agent];
-  return (
-    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-semibold text-white" style={{ background: p.color }} title={`${p.name} · ${p.title}`}>
-      {p.name[0]}
-    </span>
-  );
-}
-
-function AgentBlock({ agent, children }: { agent: AgentId; children: React.ReactNode }) {
-  const p = PERSONAS[agent];
-  return (
-    <div className="flex gap-2.5">
-      <Avatar agent={agent} />
-      <div className="min-w-0 flex-1">
-        <p className="text-xs text-slate-400">
-          <span className="font-medium text-slate-600">{p.name}</span> · {p.title}
-        </p>
-        <div className="mt-1 text-sm leading-relaxed text-slate-700">{children}</div>
-      </div>
-    </div>
-  );
-}
-
-function UserBubble({ text }: { text: string }) {
-  return (
-    <div className="flex justify-end">
-      <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-brand-600 px-3.5 py-2 text-sm text-white" data-testid="user-message">
-        {text}
-      </p>
-    </div>
-  );
-}
-
-function formatUsage(u: Usage) {
-  const total = u.inputTokens + u.outputTokens;
-  const tokens = total >= 10000 ? `${(total / 10000).toFixed(1)} 万` : String(total);
-  return `${tokens} tokens · 约 $${u.costUsd.toFixed(3)}`;
-}
-
-function FileChip({ path, status }: { path: string; status: 'writing' | 'done' }) {
-  return (
-    <li className="flex items-center gap-2 text-xs text-slate-500" data-testid="file-progress">
-      {status === 'writing' ? <span className="h-2 w-2 animate-pulse rounded-full bg-amber-400" /> : <span className="text-emerald-500">✓</span>}
-      {status === 'writing' ? '正在写入' : '已写入'} <code className="rounded bg-slate-100 px-1">{path}</code>
-    </li>
-  );
-}
-
-function MessageItem({ m }: { m: Message }) {
-  if (m.role === 'user') return <UserBubble text={m.content} />;
-  if (m.role === 'system') {
-    const failed = m.meta?.status === 'failed';
-    return (
-      <p className={`rounded-lg px-3 py-2 text-xs ${failed ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-500'}`} data-testid="system-message">
-        {m.content}
-      </p>
-    );
-  }
-  const meta = (m.meta ?? {}) as { summary?: string; files?: string[]; usage?: Usage; seq?: number; notes?: string[] };
-  return (
-    <AgentBlock agent={(m.agent as AgentId) ?? 'engineer'}>
-      <p className="whitespace-pre-wrap" data-testid="agent-message">
-        {m.content}
-      </p>
-      {meta.files && meta.files.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {meta.files.map((f) => (
-            <FileChip key={f} path={f} status="done" />
-          ))}
-        </ul>
-      )}
-      {meta.notes?.map((n) => (
-        <p key={n} className="mt-1 text-xs text-amber-600">
-          {n}
-        </p>
-      ))}
-      <p className="mt-2 flex flex-wrap gap-x-2 text-[11px] text-slate-400">
-        {meta.seq && <span className="rounded bg-emerald-50 px-1.5 text-emerald-700" data-testid="version-tag">版本 {meta.seq}</span>}
-        {meta.usage && <span data-testid="usage-tag">{formatUsage(meta.usage)}</span>}
-        <span>{timeAgo(m.created_at)}</span>
-      </p>
-    </AgentBlock>
-  );
-}
-
-function LiveItem({ live }: { live: LiveRun }) {
-  return (
-    <div className="space-y-4" data-testid="live-run">
-      {live.userText && <UserBubble text={live.userText} />}
-      <AgentBlock agent="leader">
-        <p className={live.leader ? '' : 'caret'}>{live.leader}</p>
-      </AgentBlock>
-      {(live.engineer || live.files.length > 0 || !live.error) && (
-        <AgentBlock agent="engineer">
-          <p className={`whitespace-pre-wrap ${live.usage ? '' : 'caret'}`}>{live.engineer.trim()}</p>
-          {live.files.length > 0 && (
-            <ul className="mt-2 space-y-1">
-              {live.files.map((f) => (
-                <FileChip key={f.path} path={f.path} status={f.status} />
-              ))}
-            </ul>
-          )}
-        </AgentBlock>
-      )}
-      {live.error && <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{live.error}</p>}
     </div>
   );
 }
@@ -513,72 +564,5 @@ function ProjectName({ name, onRename }: { name: string; onRename: (n: string) =
       className="rounded border border-brand-500 px-1 font-medium outline-none"
       data-testid="project-title-input"
     />
-  );
-}
-
-function CodeView({ files }: { files: Files | null }) {
-  const paths = Object.keys(files ?? {});
-  const [sel, setSel] = useState<string | null>(null);
-  const active = sel && paths.includes(sel) ? sel : (paths.find((p) => /app\.jsx$/i.test(p)) ?? paths[0]);
-  if (!files || !paths.length) return <p className="p-8 text-center text-sm text-slate-400">还没有代码。</p>;
-  return (
-    <div className="flex h-full" data-testid="code-view">
-      <ul className="w-44 shrink-0 overflow-y-auto border-r border-slate-200 bg-white py-2 text-sm">
-        {paths.map((p) => (
-          <li key={p}>
-            <button onClick={() => setSel(p)} className={`w-full truncate px-3 py-1 text-left ${p === active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'}`}>
-              {p}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <pre className="min-w-0 flex-1 overflow-auto bg-slate-950 p-4 text-xs leading-relaxed text-slate-100">
-        <code>{files[active]}</code>
-      </pre>
-    </div>
-  );
-}
-
-function VersionsView({
-  projectId,
-  currentId,
-  refreshKey,
-  onView,
-}: {
-  projectId: string;
-  currentId: string | null;
-  refreshKey: string;
-  onView: (v: Version) => void;
-}) {
-  const [versions, setVersions] = useState<VersionMeta[] | null>(null);
-  useEffect(() => {
-    api<{ versions: VersionMeta[] }>(`/api/projects/${projectId}/versions`).then((d) => setVersions(d.versions), () => setVersions([]));
-  }, [projectId, refreshKey]);
-
-  async function view(v: VersionMeta) {
-    const { version } = await api<{ version: Version }>(`/api/projects/${projectId}/versions?id=${v.id}`);
-    onView(version);
-  }
-
-  if (!versions) return <div className="skeleton m-4 h-40 rounded-lg" />;
-  if (!versions.length) return <p className="p-8 text-center text-sm text-slate-400">还没有版本。每轮生成都会保存一个版本。</p>;
-  return (
-    <ul className="h-full space-y-2 overflow-y-auto p-4" data-testid="version-list">
-      {versions.map((v) => (
-        <li key={v.id} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3" data-testid="version-item">
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">v{v.seq}</span>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm text-slate-700">{v.summary ?? '（无摘要）'}</p>
-            <p className="text-xs text-slate-400">
-              {timeAgo(v.created_at)}
-              {v.id === currentId && <span className="ml-2 rounded bg-emerald-50 px-1.5 text-emerald-700">当前</span>}
-            </p>
-          </div>
-          <button onClick={() => view(v)} className="shrink-0 rounded px-2 py-1 text-xs text-brand-600 hover:bg-brand-50">
-            预览
-          </button>
-        </li>
-      ))}
-    </ul>
   );
 }

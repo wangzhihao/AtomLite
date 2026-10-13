@@ -43,7 +43,8 @@ export type Message = {
 };
 
 export type RunIntent = 'create' | 'edit' | 'fix';
-export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+/** needs_input：Planner 发起了需求澄清，本轮不生成代码 */
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'needs_input';
 
 export type Run = {
   id: string;
@@ -67,18 +68,41 @@ export type Run = {
 
 export type SessionUser = { id: string; email: string | null; is_anonymous: boolean };
 
-export type Usage = { inputTokens: number; outputTokens: number; costUsd: number };
+export type Usage = { inputTokens: number; outputTokens: number; costUsd: number; fixRounds?: number };
+
+/** Planner 的规格 JSON */
+export type Spec = {
+  appName: string;
+  summary?: string;
+  features: string[];
+  components?: string[];
+  files?: string[];
+  dataModel?: string;
+  style?: string;
+  assumptions?: string[];
+};
+
+export type ClarifyQuestion = { id: string; question: string; placeholder?: string };
+
+/** 运行检查发现的问题 */
+export type ErrorKind = 'syntax' | 'runtime' | 'console' | 'blank';
+export type CheckError = { kind: ErrorKind; message: string; file?: string; line?: number | null };
 
 /** SSE 事件协议（设计文档第 8 节） */
 export type AgentEvent =
   | { event: 'run_started'; data: { runId: string; intent: RunIntent } }
   | { event: 'agent_started'; data: { agent: AgentId } }
   | { event: 'message_delta'; data: { agent: AgentId; text: string } }
-  | { event: 'file_started'; data: { path: string } }
-  | { event: 'file_done'; data: { path: string; bytes: number; content: string } }
+  | { event: 'file_started'; data: { path: string; agent?: AgentId } }
+  | { event: 'file_done'; data: { path: string; bytes: number; content: string; agent?: AgentId } }
   | { event: 'version_created'; data: { versionId: string; seq: number; deleted: string[]; messageId: string } }
   | { event: 'run_finished'; data: { status: RunStatus; usage: Usage } }
-  | { event: 'error'; data: { code: string; message: string } };
+  | { event: 'error'; data: { code: string; message: string } }
+  | { event: 'plan'; data: { spec: Spec } }
+  | { event: 'design'; data: { design: Record<string, unknown> } }
+  | { event: 'clarify'; data: { questions: ClarifyQuestion[] } }
+  | { event: 'check_failed'; data: { errors: CheckError[]; round: number } }
+  | { event: 'suggestions'; data: { items: string[] } };
 
 export const LIMITS = {
   messageChars: 4000,
@@ -88,4 +112,8 @@ export const LIMITS = {
   maxOutputTokens: 16000,
   runsPerHourUser: 20,
   runsPerDayGuest: 10,
+  /** 同一个 run 内自动修复的最大轮数（服务端检查 + 运行时检查合计） */
+  maxFixRounds: 2,
+  /** 一个 run 含修复的总 token 预算 */
+  runTokenBudget: 60_000,
 } as const;

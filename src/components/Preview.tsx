@@ -34,6 +34,7 @@ export function Preview({
   device,
   overlay,
   onIssue,
+  onRendered,
   fullscreen = false,
 }: {
   projectId: string;
@@ -42,11 +43,15 @@ export function Preview({
   device: 'desktop' | 'mobile';
   overlay?: string | null;
   onIssue?: (issue: PreviewIssue) => void;
+  /** 渲染后 3 秒观察窗口结束（运行检查的时机） */
+  onRendered?: (empty: boolean) => void;
   fullscreen?: boolean;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const onIssueRef = useRef(onIssue);
   onIssueRef.current = onIssue;
+  const onRenderedRef = useRef(onRendered);
+  onRenderedRef.current = onRendered;
   const [origin, setOrigin] = useState('');
   useEffect(() => setOrigin(window.location.origin), []);
 
@@ -87,6 +92,7 @@ export function Preview({
           break;
         case 'rendered':
           if (d.empty) onIssueRef.current?.({ kind: 'blank', message: '页面渲染后是空白的（根节点没有内容）' });
+          onRenderedRef.current?.(Boolean(d.empty));
           break;
       }
     }

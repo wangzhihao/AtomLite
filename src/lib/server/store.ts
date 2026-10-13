@@ -20,16 +20,19 @@ import { supabaseServer } from './supabase';
  */
 export interface Store {
   listProjects(): Promise<Project[]>;
-  createProject(name: string): Promise<Project>;
+  createProject(name: string, remixedFrom?: string | null): Promise<Project>;
   getProject(id: string): Promise<Project | null>;
   renameProject(id: string, name: string): Promise<Project | null>;
   deleteProject(id: string): Promise<boolean>;
+  /** 发布：只移动指针（published_version_id），之后的修改不影响已发布页面 */
+  publishProject(id: string, slug: string, versionId: string): Promise<Project | null>;
 
   listMessages(projectId: string): Promise<Message[]>;
   addMessage(m: Omit<Message, 'id' | 'created_at'>): Promise<Message>;
   updateMessage(id: string, patch: Partial<Pick<Message, 'meta' | 'content' | 'version_id'>>): Promise<void>;
 
   getVersion(id: string): Promise<Version | null>;
+  setVersionVerified(id: string, verified: boolean): Promise<void>;
   listVersions(projectId: string): Promise<VersionMeta[]>;
   /** 写入新版本（seq 自增）并把项目的当前版本指向它 */
   createVersion(
@@ -38,6 +41,7 @@ export interface Store {
   ): Promise<Version>;
 
   createRun(r: Pick<Run, 'project_id' | 'intent' | 'model'>): Promise<Run>;
+  getRun(id: string): Promise<Run | null>;
   updateRun(id: string, patch: Partial<Omit<Run, 'id' | 'project_id' | 'user_id'>>): Promise<void>;
   findRunningRun(projectId: string): Promise<Run | null>;
   countRunsSince(sinceIso: string): Promise<number>;
@@ -64,7 +68,7 @@ function localStore(user: SessionUser): Store {
         .projects.filter((p) => p.owner_id === user.id)
         .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     },
-    async createProject(name) {
+    async createProject(name, remixedFrom = null) {
       const p: Project = {
         id: randomUUID(),
         owner_id: user.id,
@@ -72,7 +76,7 @@ function localStore(user: SessionUser): Store {
         current_version_id: null,
         published_slug: null,
         published_version_id: null,
-        remixed_from: null,
+        remixed_from: remixedFrom,
         created_at: now(),
         updated_at: now(),
       };
@@ -101,6 +105,16 @@ function localStore(user: SessionUser): Store {
       save();
       return true;
     },
+    async publishProject(id, slug, versionId) {
+      const p = db().projects.find((x) => x.id === id && x.owner_id === user.id);
+      if (!p) return null;
+      if (db().projects.some((x) => x.published_slug === slug && x.id !== id)) throw new Error('slug taken');
+      p.published_slug = slug;
+      p.published_version_id = versionId;
+      p.updated_at = now();
+      save();
+      return p;
+    },
     async listMessages(projectId) {
       if (!owned(projectId)) return [];
       return db().messages.filter((m) => m.project_id === projectId);
@@ -121,6 +135,12 @@ function localStore(user: SessionUser): Store {
     async getVersion(id) {
       const v = db().versions.find((x) => x.id === id);
       return v && owned(v.project_id) ? v : null;
+    },
+    async setVersionVerified(id, verified) {
+      const v = db().versions.find((x) => x.id === id);
+      if (!v || !owned(v.project_id)) return;
+      v.verified = verified;
+      save();
     },
     async listVersions(projectId) {
       if (!owned(projectId)) return [];
@@ -163,6 +183,9 @@ function localStore(user: SessionUser): Store {
       save();
       return run;
     },
+    async getRun(id) {
+      return db().runs.find((x) => x.id === id && x.user_id === user.id) ?? null;
+    },
     async updateRun(id, patch) {
       const r = db().runs.find((x) => x.id === id && x.user_id === user.id);
       if (!r) return;
@@ -202,10 +225,20 @@ function supabaseStore(user: SessionUser): Store {
     async listProjects() {
       return check(await (await sb).from('projects').select('*').order('updated_at', { ascending: false })) as Project[];
     },
-    async createProject(name) {
+    async createProject(name, remixedFrom = null) {
       return check(
-        await (await sb).from('projects').insert({ name, owner_id: user.id }).select('*').single(),
+        await (await sb).from('projects').insert({ name, owner_id: user.id, remixed_from: remixedFrom }).select('*').single(),
       ) as Project;
+    },
+    async publishProject(id, slug, versionId) {
+      return check(
+        await (await sb)
+          .from('projects')
+          .update({ published_slug: slug, published_version_id: versionId, updated_at: now() })
+          .eq('id', id)
+          .select('*')
+          .maybeSingle(),
+      ) as Project | null;
     },
     async getProject(id) {
       return check(await (await sb).from('projects').select('*').eq('id', id).maybeSingle()) as Project | null;
@@ -232,6 +265,9 @@ function supabaseStore(user: SessionUser): Store {
     },
     async getVersion(id) {
       return check(await (await sb).from('versions').select('*').eq('id', id).maybeSingle()) as Version | null;
+    },
+    async setVersionVerified(id, verified) {
+      check(await (await sb).from('versions').update({ verified }).eq('id', id));
     },
     async listVersions(projectId) {
       return check(
@@ -269,6 +305,9 @@ function supabaseStore(user: SessionUser): Store {
           .select('*')
           .single(),
       ) as Run;
+    },
+    async getRun(id) {
+      return check(await (await sb).from('runs').select('*').eq('id', id).maybeSingle()) as Run | null;
     },
     async updateRun(id, patch) {
       check(await (await sb).from('runs').update(patch).eq('id', id));

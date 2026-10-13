@@ -7,10 +7,22 @@ export const env = {
   dataDir: process.env.ATOMS_DATA_DIR ?? '.data',
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? '',
   strongModel: process.env.ATOMS_STRONG_MODEL ?? 'claude-opus-5-5',
+  fastModel: process.env.ATOMS_FAST_MODEL ?? 'claude-haiku-5-5',
   effort: (process.env.ATOMS_EFFORT ?? 'medium') as 'low' | 'medium' | 'high' | 'xhigh' | 'max',
-  priceIn: Number(process.env.ATOMS_PRICE_IN ?? 4),
-  priceOut: Number(process.env.ATOMS_PRICE_OUT ?? 20),
-  priceCacheRead: Number(process.env.ATOMS_PRICE_CACHE_READ ?? 0.2),
+  /** 每百万 token 美元单价 */
+  prices: {
+    strong: {
+      in: Number(process.env.ATOMS_PRICE_IN ?? 4),
+      out: Number(process.env.ATOMS_PRICE_OUT ?? 20),
+      cacheRead: Number(process.env.ATOMS_PRICE_CACHE_READ ?? 0.2),
+    },
+    fast: {
+      in: Number(process.env.ATOMS_FAST_PRICE_IN ?? 0.1),
+      out: Number(process.env.ATOMS_FAST_PRICE_OUT ?? 0.5),
+      cacheRead: Number(process.env.ATOMS_FAST_PRICE_CACHE_READ ?? 0.01),
+    },
+  },
+  supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
   /** Mock LLM 每个分块之间的延迟（毫秒） */
   mockDelayMs: Number(process.env.ATOMS_MOCK_DELAY_MS ?? 15),
 };

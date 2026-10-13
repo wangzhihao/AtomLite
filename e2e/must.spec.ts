@@ -23,7 +23,7 @@ test('[1][3][4][5] 游客一句话生成：流式输出 → 沙箱预览可交�
 
   // 首页输入的需求不会丢失
   await expect(page.getByTestId('user-message').first()).toHaveText('做一个读书清单');
-  await expect(page.getByTestId('agent-message').first()).toContainText('读书清单');
+  await expect(page.getByTestId('msg-engineer').getByTestId('agent-message')).toContainText('读书清单');
   await expect(page.getByTestId('usage-tag').first()).toContainText('tokens');
 
   // 沙箱预览：应用可以交互，localStorage 走存储垫片
@@ -79,8 +79,7 @@ test('[6][5] 多轮迭代：每轮生成新版本，只改变更文件，预览�
   await shot(page, '03-iteration-v3');
 
   // 第三轮只输出了 changes.json
-  const last = page.locator('[data-testid=agent-message]').last().locator('..');
-  await expect(last.getByTestId('file-progress')).toHaveCount(1);
+  await expect(page.getByTestId('msg-engineer').last().getByTestId('file-progress')).toHaveCount(1);
 
   await page.getByTestId('tab-versions').click();
   await expect(page.getByTestId('version-item')).toHaveCount(3);
@@ -126,14 +125,15 @@ test('[4] 桌面 / 手机宽度切换', async ({ page }) => {
   await expect.poll(async () => (await iframe.boundingBox())!.width).toBeGreaterThan(800);
 });
 
-test('[4] 运行时报错出现错误条，“让 Agent 修复”生成修复版本', async ({ page }) => {
-  await createFromHome(page, '[broken] 做一个会出错的应用');
-  await expect(page.getByTestId('error-bar')).toBeVisible({ timeout: 20_000 });
+test('[4] 运行时报错修不好时出现错误条，“让 Agent 修复”发起新一轮', async ({ page }) => {
+  // [stubborn]：Mock Fixer 修不好，自动修复一次后同一错误签名重复，停止自动修复并交给用户
+  await createFromHome(page, '[broken][stubborn] 做一个会出错的应用');
+  await expect(page.getByTestId('error-bar')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('version-badge')).toHaveText('版本 2');
   await shot(page, '07-error-bar');
   await page.getByTestId('fix').click();
-  await waitVersion(page, 2);
-  await expect(frame(page).getByTestId('app-title')).toBeVisible();
-  await expect(page.getByTestId('error-bar')).toHaveCount(0);
+  await expect(page.getByTestId('user-message').last()).toContainText('让 Agent 修复');
+  await waitVersion(page, 3);
 });
 
 test('[2] 项目管理：创建、列表、重命名、删除', async ({ page }) => {
